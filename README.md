@@ -101,13 +101,13 @@ Lưu ý rằng. internal NTDLL functions được bàn luận ở đây có th�
 ### 2.1. OVERVIEW
 **Architecture**
 
-Segment Heap bao gồm bốn components (thành phần): (1) Backend, phân bổ các heap block có kích thước > 128KB và <= 508KB. Nó sử dụng các virtual memory functions do NT Memory Manager cung cấp để tạo và quản lý các segment ở nơi các backend block được cấp phát từ đó. (2) Thành phần phân bổ variable size (VS) cho các yêu cầu cấp phát kích thước <= 128KB. Nó sử dụng backend để tạo các VS subsegments ở nơi các VS block được cấp phát từ đó. (3) Low Fragmentation Heap (LFH) cho các yêu cầu cấp phát có kích thước <= 16.368 byte nhưng chỉ khi kích thước phân bổ được phát hiện là thường được sử dụng trong việc cấp phát. Nó sử dụng backend để tạo các phân đoạn LFH subsegments nơi các LFH block được cấp phát từ dó. (4) Sử dụng để phân bổ các block > 508KB. Nó sử dụng các chức năng bộ nhớ ảo do NT Memory Manager cung cấp để phân bổ và giải phóng các khối lớn. Nó sử dụng virtual memory functions cho việc cấp phát và giải phóng các block lớn.
+Segment Heap bao gồm bốn components (thành phần): (1) Backend, phân bổ các heap block có kích thước > 128KB và <= 508KB. Nó sử dụng các virtual memory functions do NT Memory Manager cung cấp để tạo và quản lý các segment ở nơi các backend block được cấp phát từ đó. (2) Thành phần phân bổ variable size (VS) cho các yêu cầu cấp phát kích thước <= 128KB. Nó sử dụng backend để tạo các VS subsegments ở nơi các VS block được cấp phát từ đó. (3) Low Fragmentation Heap (LFH) cho các yêu cầu cấp phát có kích thước <= 16.368 byte nhưng chỉ khi kích thước phân bổ được phát hiện là thường được sử dụng trong việc cấp phát. Nó sử dụng backend để tạo các phân đoạn LFH subsegments nơi các LFH block được cấp phát từ dó. (4) Sử dụng để phân bổ các block > 508KB. Nó sử dụng các virtual memory functions do NT Memory Manager cung cấp để cấp phát và giải phóng các block lớn.
 
 ![](pic/pic1.PNG)
 
 **Defaults and Configuration**
 
-Segment Heap hiện là một tính năng tự lựa chọn tham gia. Các ứng dụng Windows được chọn tham gia theo mặc định và các tệp thực thi có tên khớp với bất kỳ tên nào sau đây (tên của tệp thực thi hệ thống) cũng được chọn tham gia theo mặc định để sử dụng Segment Heap:
+Segment Heap hiện là một tính năng opt-in. Các ứng dụng Windows được opt-in theo mặc định và các tệp thực thi có tên khớp với bất kỳ tên nào sau đây (tên của tệp thực thi hệ thống) cũng được opt-in theo mặc định để sử dụng Segment Heap:
 - csrss.exe
 - lsass.exe
 - runtimebroker.exe
@@ -343,12 +343,254 @@ Sơ đồ bên dưới miêu tả logic của hàm RtlpHpSegPageRangeAllocate():
 
 ![](pic/pic10.PNG)
 
+RtlpHpSegPageRangeAllocate() trước tiên đi qua backend free tree để tìm một free backend block có thể phù hợp với phân bổ. Key tìm kiếm được sử dụng để tìm free backend block là một giá trị có kích thước WORD, trong đó BYTE cao là số page được yêu cầu và BYTE thấp là bitwise NOT của số page được yêu cầu. Điều này có nghĩa là một tìm kiếm phù hợp nhất được ưu tiên thực hiện block được commit cao nhất, rõ hơn, nếu hai hoặc nhiều free block có kích thước tương đương phù hợp nhất với kích thước cần phân bổ, thì free block được commit cao nhất sẽ được chọn để phân bổ. Nếu bất kỳ free backend blocks nào không thể phù hợp với phân bổ, một segment mới sẽ được tạo.
 
-![](pic/pic1.PNG)
-![](pic/pic1.PNG)
-![](pic/pic1.PNG)
-![](pic/pic1.PNG)
-![](pic/pic1.PNG)
-![](pic/pic1.PNG)
-![](pic/pic1.PNG)
+Vì free backend block đã chọn có thể có nhiều page hơn số page được yêu cầu, free block sẽ được tách ra trước nếu cần thông qua RtlpHpSegPageRangeSplit() và “first” page range descriptor của free block còn lại sẽ được chèn vào backend free tree .
+
+![](pic/pic11.PNG)
+
+Cuối cùng, trường RangeFlags của page range descriptors của block đó được cập nhật (PAGE_RANGE_FLAGS_ALLOCATED bitis set) để đánh dấu các trang của block đó là đã được cấp phát.
+
+**Backend Freeing**
+
+Backend Freeing được thực hiện thông qua hàm RtlpHpSegPageRangeShrink() với các đối số sau:
+```
+BOOLEAN RtlpHpSegPageRangeShrink(_SEGMENT_HEAP* HeapBase, _HEAP_PAGE_RANGE_DESCRIPTOR* FirstPageRangeDescriptor, ULONG NewPageCount, ULONG Flags)
+```
+
+Trong đó FirstPageRangeDescriptor là  “first” page range descriptor của backend block được giải phóng và NewPageCount bằng 0 có nghĩa là giải phóng block.
+
+RtlpHpSegPageRangeShrink() trước tiên sẽ xóa bit PAGE_RANGE_FLAGS_ALLOCATED trong trường RangeFlags của tất cả (ngoại trừ “first”) page range descriptors mô tả backend block được giải phóng. Sau đó, nó gọi RtlpHpSegPageRangeCoalesce() để kết hợp backend block được giải phóng với các free backend block lân cận (trước và sau) và xóa bit PAGE_RANGE_FLAGS_ALLOCATED trong trường RangeFlags của “first” page range descriptor của block được giải phóng.
+
+![](pic/pic12.PNG)
+
+Sau đó,“first” page range descriptor của block được hợp nhất được chèn vào backend free tree để có sẵn một free block được hợp nhất để phân bổ.
+
+### 2.3. VARIABLE SIZE ALLOCATION
+Variable size (VS) allocation được sử dụng cho phân bổ với kích thước từ 1 đến 131,072 (0x20000) byte. Các VS block có độ chi tiết 16 byte và mỗi block đều có block header ở đầu.
+
+**VS Subsegments**
+
+VS allocation component dựa vào backend để tạo các VS subsegments nơi các VS block được cấp phát từ đó. Một VS subsegments là một loại đặc biệt của backend block trong đó RangeFlags của “first” page range descriptor có PAGE_RANGE_FLAGS_VS_SUBSEGMENT (0x20) bit set.
+
+Dưới đây là minh họa về mối quan hệ của HeapBase, một segment và một VS subsegment:
+
+![](pic/pic13.PNG)
+
+**_HEAP_VS_CONTEXT Structure**
+
+VS context structure theo dõi các free VS block, các VS subsegment và các thông tin khác liên quan đến trạng thái cấp phát VS. Nó được lưu trữ trong trường VsContext trong HeapBase và có các trường sau:
+```
+windbg> dt ntdll!_HEAP_VS_CONTEXT
+   +0x000 Lock : _RTL_SRWLOCK
+   +0x008 FreeChunkTree : _RTL_RB_TREE
+   +0x018 SubsegmentList : _LIST_ENTRY
+   +0x028 TotalCommittedUnits : Uint8B
+   +0x030 FreeCommittedUnits : Uint8B
+   +0x038 BackendCtx : Ptr64 Void
+   +0x040 Callbacks : _HEAP_SUBALLOCATOR_CALLBACKS
+```
+   - FreeChunkTree - RB tree của free VS blocks.
+   - SubsegmentList - Danh sách liên kết chứa tất cả các VS subsegment.
+   - BackendCtx - trỏ đến cấu trúc _SEGMENT_HEAP (HeapBase).
+   - Callbacks - Encoded (xem thêm ở phần 3.5) callbacks được sử dụng để quản lý các VS subsegment.
+   
+**_HEAP_VS_SUBSEGMENT Structure**
+Các VS subsegment là nơi các VS block được cấp phát. Các VS subsegment được cấp phát và khởi tạo thông qua hàm RtlpHpVsSubsegmentCreate() và sẽ có cấu trúc _HEAP_VS_SUBSEGMENT sau làm header:
+```
+windbg> dt ntdll!_HEAP_VS_SUBSEGMENT
+   +0x000 ListEntry : _LIST_ENTRY
+   +0x010 CommitBitmap : Uint8B
+   +0x018 CommitLock : _RTL_SRWLOCK
+   +0x020 Size : Uint2B
+   +0x022 Signature : Uint2B
+ ```
+   - Listentry - Mỗi VS subsegment là một node của danh sách liên kết các VS subsegment (VsContext.SubsegmentList).
+   - CommitBitmap - Commit bitmap của VS subsegment pages.
+   - Size - Size của the VS subsegment (trừ đi 0x30 cho VS subsegment header) trong 16-byte blocks.
+   - Signature - Được sử dụng để kiểm tra xem VS subsegment có bị corrupt. Được tính toán bằng: Size ^ 0xABED. 
+   
+Dưới đây là một minh họa về một VS subsegment. Cấu trúc _HEAP_VS_SUBSEGMENT ở offset 0x00, trong khi các VS block bắt đầu ở offset 0x30:
+
+![](pic/pic14.PNG)
+
+**_HEAP_VS_CHUNK_HEADER Structure**
+
+Busy VS blocks có 16-byte (0x10) header theo cấu trúc sau:
+```
+windbg> dt ntdll!_HEAP_VS_CHUNK_HEADER -r
+   +0x000 Sizes : _HEAP_VS_CHUNK_HEADER_SIZE
+      +0x000 MemoryCost : Pos 0, 16 Bits
+      +0x000 UnsafeSize : Pos 16, 16 Bits
+      +0x004 UnsafePrevSize : Pos 0, 16 Bits
+      +0x004 Allocated : Pos 16, 8 Bits
+      +0x000 KeyUShort : Uint2B
+      +0x000 KeyULong : Uint4B
+      +0x000 HeaderBits : Uint8B
+   +0x008 EncodedSegmentPageOffset : Pos 0, 8 Bits
+   +0x008 UnusedBytes : Pos 8, 1 Bit
+   +0x008 SkipDuringWalk : Pos 9, 1 Bit
+   +0x008 Spare : Pos 10, 22 Bits
+   +0x008 AllocatedChunkBits : Uint4B
+```
+   - Sizes - Cấu trúc con có kích thước QWORD được mã hóa, nó chứa thông tin quan trọng về kích thước và trạng thái
+      - MemoryCost - Được dùng cho free VS blocks. Một giá trị được tính dựa trên độ lớn của phần được commit của block. Phần block được commit càng lớn thì có chi phí bộ nhớ càng thấp. Điều này có nghĩa là nếu một block có chi phí bộ nhớ thấp được chọn để cấp phát, thì lượng bộ nhớ nhỏ hơn cần được cam kết. 
+      - UnsafeSize - Size của the VS block (bao gồm block header) in 16-byte blocks.
+      - UnsafePrevSize - Size của the previous VS block (includes the block header) in 16-byte blocks.
+      - Allocated - Block is busy nếu giá trị này khác 0.
+      - KeyULong - Được sử dụng trong free VS blocks. Một key có kích thước DWORD được sử dụng khi chèn free VS block và VS free tree. High WORD là trường UnsafeSize và low WORD là trường MemoryCost.
+   - EncodedSegmentPageOffset – Offset được mã hóa của block bắt đầu của VS subsegment trong pages.
+   - UnusedBytes - Flag cho biết liệu block có các byte không được sử dụng hay không, nghĩa là UserSize và tổng kích thước block (trừ 0x10 byte header) là khác nhau hay không. Nếu flag này được set, hai byte cuối cùng của VS block được coi là giá trị 16 bit low endian. Nếu số unused bytes là 1, high bit của giá trị 16 bit này được set và các bit còn lại không được sử dụng, ngược lại, high bit sẽ được clear và 13 bit thấp được sử dụng để lưu trữ giá trị byte chưa sử dụng.
+   
+Hình bên dưới minh họa một busy VS block (lưu ý rằng 9 byte đầu tiên đã được encode):
+
+![](pic/pic15.PNG)
+
+**_HEAP_VS_CHUNK_FREE_HEADER Structure**
+
+Các Free VS block có header 32 byte (0x20) trong đó 8 byte đầu tiên là 8 byte đầu tiên của cấu trúc _HEAP_VS_CHUNK_HEADER. Bắt đầu từ offset 0x08 là trường Node hoạt động như một note trong VS free tree (VsContext.FreeChunkTree):
+
+```
+windbg> dt ntdll!_HEAP_VS_CHUNK_FREE_HEADER -r
++0x000 Header : _HEAP_VS_CHUNK_HEADER
+   +0x000 Sizes : _HEAP_VS_CHUNK_HEADER_SIZE
+      +0x000 MemoryCost : Pos 0, 16 Bits
+      +0x000 UnsafeSize : Pos 16, 16 Bits
+      +0x004 UnsafePrevSize : Pos 0, 16 Bits
+      +0x004 Allocated : Pos 16, 8 Bits
+      +0x000 KeyUShort : Uint2B
+      +0x000 KeyULong : Uint4B
+      +0x000 HeaderBits : Uint8B
+   +0x008 EncodedSegmentPageOffset : Pos 0, 8 Bits
+   +0x008 UnusedBytes : Pos 8, 1 Bit
+   +0x008 SkipDuringWalk : Pos 9, 1 Bit
+   +0x008 Spare : Pos 10, 22 Bits
+   +0x008 AllocatedChunkBits : Uint4B
++0x000 OverlapsHeader : Uint8B
++0x008 Node : _RTL_BALANCED_NODE
+```
+
+Hình bên dưới minh họa một free VS block (lưu ý rằng 8 byte đầu tiên đã được encode):
+
+![](pic/pic16.PNG)
+
+**VS Free Tree**
+Cấp phát và giải phóng VS sử dụng VS free tree để tìm kiếm và lưu trữ thông tin về các free VS block. 
+
+Root của VS free tree được lưu trữ trong VsContext.FreeChunkTree và các node trên cây là trường Node của các free VS block. Key được sử dụng để chèn các node vào trong VS free tree là trường Header.Sizes.KeyULong của free VS block (Sizes.KeyULong đã được thảo luận trong phần phụ “_HEAP_VS_CHUNK_HEADER Structure” ở trên).
+
+Below is an illustration of a VS free tree in which there are three free VS blocks with sizes 0xF80, 0x1010 and 0x3010 (all portions of the free blocks are committed - MemoryCost is 0x0000):
+
+Dưới đây là hình minh họa về một VS free tree, trong đó có ba free VS blocks với kích thước 0xF80, 0x1010 và 0x3010 (tất cả các phần của free block đều được commit - MemoryCost là 0x0000):
+
+![](pic/pic17.PNG)
+
+**VS Allocation**
+
+VS allocation được thực hiện thông qua hàm RtlpHpVsContextAllocate(), với các đối số như sau:
+```
+PVOID RtlpHpVsContextAllocate(_HEAP_VS_CONTEXT* VsContext, SIZE_T UserSize, SIZE_T AllocSize, ULONG Flags)
+```
+
+Sơ đồ bên dưới mô tả logic của hàm RtlpHpVsContextAllocate():
+
+![](pic/pic18.PNG)
+
+Trước tiên, RtlpHpVsContextAllocate() duyệt VS free tree để tìm một free VS block có thể phù hợp với phân bổ. Key tìm kiếm được sử dụng để tìm free VS block là một giá trị có kích thước DWORD trong đó high WORD là số block 16 byte có thể chứa AllocSize cộng một (đối với block header) và low WORD là 0 (đối với MemoryCost). Điều này có nghĩa là một tìm kiếm phù hợp nhất được thực hiện với free VS block với chi phí bộ nhớ thấp nhất (hầu hết các phần của block được commit) được ưu tiên, nói cách khác, nếu hai hoặc nhiều free block có kích thước tương đương phù hợp nhất với phân bổ, khối miễn phí được commit nhiều nhất sẽ được chọn để phân bổ. Nếu không có bất kỳ free VS block nào phù hợp với phân bổ, một VS segment mới sẽ được tạo.
+
+Vì kích thước của free VS block đã chọn có thể lớn hơn kích thước block có thể chứa AllocSize, các free VS block lớn sẽ được tách ra trừ khi kích thước block của block còn lại sẽ nhỏ hơn 0x20 byte (kích thước của free VS block header), block còn lại sau khi tách ra phải lớn hơn 0x20 bytes thì mới được tách.
+
+![](pic/pic19.PNG)
+
+Việc tách free VS block được thực hiện bởi hàm RtlpHpVsChunkSplit(). RtlpHpVsChunkSplit() cũng là hàm loại bỏ free VS block khỏi VS free tree và cũng chèn free block còn lại kết quả vào VS free tree nếu có thể tách block.
+
+**VS Freeing**
+
+VS Freeing được thực hiện thông qua hàm RtlpHpVsContextFree(), nó có các đối số sau:
+```
+BOOLEAN RtlpHpVsContextFree(_HEAP_VS_CONTEXT* VsContext, _HEAP_VS_SUBSEGMENT* VsSubegment, PVOID UserAddress, ULONG Flags, ULONG* LfhBlockSize)
+```
+
+Trong đó UserAddress là địa chỉ của VS block được giải phóng và LfhBlockSize sẽ trở thành block size của VS block được giải phóng trừ đi 0x10 (kích thước busy VS block header). LfhBlockSize sẽ được dùng bởi việc gọi hàm RtlpHpVsContextFree() sử dụng trong việc cập nhật bộ đếm LFH bucket usage tương ứng với LfhBlockSize.
+
+Trước tiên, RtlpHpVsContextFree() kiểm tra xem VS block có thực sự được cấp phát hay không bằng cách kiểm tra trường Allocated trong header của block đó. Sau đó, nó sẽ gọi RtlpHpVsChunkCoalesce() để liên kết block được giải phóng với các free block lân cận (trước và sau)
+
+![](pic/pic20.PNG)
+
+Cuối cùng, free block is được liên kết được chèn vào VS free tree để dùng cho việc phân bổ.
+
+### 2.4. LOW FRAGMENTATION HEAP
+Low Fragmentation Heap (LFH) được sử dụng để phân bổ block có kích thước từ 1 đến 16.368 (0x3FF0) byte. Tương tự như LFH trong NT Heap, LFH trong Segment Heap ngăn chặn sự phân mảnh bằng cách sử dụng lược đồ bucketing khiến các block có kích thước tương tự được cấp phát từ các block có bộ nhớ pre-allocated lớn hơn.
+
+Dưới đây là bảng liệt kê các LFH bucket khác nhau, kích thước phân bổ (allocation sizes) được phân phối cho các bucket và mức độ chi tiết (granularity) tương ứng của các bucket:
+
+| Bucket       | Allocation Size                         | Granularity  |
+|:------------:|----------------------------------------:|-------------:|
+| 1 – 64       | 1 – 1,024 bytes (0x1 – 0x400)           | 16 bytes     |
+| 65 – 80      | 1,025 – 2,048 bytes (0x401 – 0x800)     | 64 bytes     |
+| 81 – 96      | 2,049 – 4,096 bytes (0x801 – 0x1000)    | 128 bytes    |
+| 97 – 112     | 4,097 – 8,192 bytes (0x1001 – 0x2000)   | 256 bytes    |
+| 113 – 128    | 8,193 – 16,368 bytes (0x2001 – 0x3FF0)  | 512 bytes    |
+
+Các LFH bucket chỉ được kích hoạt (enabled) nếu kích thước phân bổ tương ứng của nó được phát hiện là phổ biến. LFH bucket activation và usage counter sẽ được thảo luận kỹ hơn ở phần sau.
+
+Dưới đây là hình minh họa một số bucket đã kích hoạt và một số bucket không được kích hoạt bao gồm kích thước phân bổ tương ứng của chúng:
+
+![](pic/pic21.PNG)
+
+Các bucket #1, #65 và #97 được kích hoạt và do đó, các yêu cầu phân bổ cho các kích thước phân bổ tương ứng sẽ được phục vụ thông qua các LFH bucket này. Các bucket #81 và #113 vẫn chưa được kích hoạt và do đó, các yêu cầu phân bổ cho các kích thước phân bổ tương ứng sẽ khiến usage counter của các LFH bucket này được cập nhật. Nếu usage counter đạt đến một giá trị cụ thể sau khi cập nhật, bucket của nó sẽ được kích hoạt và phân bổ sẽ được phục vụ qua LFH bucket, ngược lại, yêu cầu cấp phát cuối cùng sẽ được chuyển đến VS allocation component.
+
+**LFH Subsegments**
+
+LFH component dựa vào backend để tạo các LFH subsegment nơi các LFH block được cấp phát từ đó. Một LFH subsegment là một loại đặc biệt của backend block trong đó trường RangeFlags của “first” page range descriptor tương ứng có PAGE_RANGE_FLAGS_LFH_SUBSEGMENT (0x01) bit set.
+
+Dưới đây là minh họa về mối quan hệ của HeapBase, một segment và một LFH subsegment:
+
+![](pic/pic22.PNG)
+
+**_HEAP_LFH_CONTEXT Structure**
+
+LFH context theo dõi các LFH bucket, LFH bucket usage counters và các thông tin khác liên quan đến trạng thái LFH. Nó được lưu trữ trong trường LfhContext trong HeapBase và có các trường sau:
+```
+windbg> dt ntdll!_HEAP_LFH_CONTEXT -r
+   +0x000 BackendCtx : Ptr64 Void
+   +0x008 Callbacks : _HEAP_SUBALLOCATOR_CALLBACKS
+   +0x030 SubsegmentCreationLock : _RTL_SRWLOCK
+   +0x038 MaxAffinity : UChar
+   +0x040 AffinityModArray : Ptr64 UChar
+   +0x050 SubsegmentCache : _HEAP_LFH_SUBSEGMENT_CACHE
+      +0x000 SLists : [7] _SLIST_HEADER
+   +0x0c0 Buckets : [129] Ptr64 _HEAP_LFH_BUCKET
+```
+   - BackendCtx - trỏ đến cấu trúc _SEGMENT_HEAP (HeapBase).
+   - Callbacks – Các callback được mã hóa (xem thêm ở phần 3.5) để quản lý các phần mở rộng LFH subsegments và LFH context.
+   - MaxAffinity - Số lượng tối đa slot giống nhau có thể được tạo.
+   - SubsegmentCache - Tracks cached (unused) LFH subsegments.
+   - Buckets - Mảng các con trỏ trỏ đến các LFH bucket. Nếu một bucket được kích hoạt, bit 0 của con trỏ này sẽ clear và nó sẽ trỏ đến cấu trúc _HEAP_LFH_BUCKET. Mặt khác (nếu bit 0 được set), con trỏ trỏ đến cấu trúc _HEAP_LFH_ONDEMAND_POINTER được sử dụng để theo dõi việc sử dụng LFH bucket.
+
+Reserved virtual memory nằm sau cấu trúc _SEGMENT_HEAP trong HeapBase, được gọi là phần mở rộng LFH context, được dynamically committed để lưu trữ bổ sung các cấu trúc liên quan đến LFH bucket cho các LFH bucket được kích hoạt động (xem hình minh họa ở trên).
+
+**_HEAP_LFH_ONDEMAND_POINTER Structure**
+
+Như đã đề cập ở trên, nếu LFH bucket không được kích hoạt, entry của bucket trong LfhContext.Buckets sẽ là usage counter. Bucket usage counter sẽ có cấu trúc sau:
+```
+windbg> dt ntdll!_HEAP_LFH_ONDEMAND_POINTER
+   +0x000 Invalid : Pos 0, 1 Bit
+   +0x000 AllocationInProgress : Pos 1, 1 Bit
+   +0x000 Spare0 : Pos 2, 14 Bits
+   +0x002 UsageData : Uint2B
+   +0x000 AllBits : Ptr64 Void
+```
+   - Invalid - Điểm đánh dấu để xác định xem con trỏ này có phải là con trỏ _HEAP_LFH_BUCKET không hợp lệ (lowest bit set) hay không, từ đó xác định cấu trúc này là một bucket usage counter.
+   - UsageData – Giá trị này có kích thước WORD mô tả việc sử dụng LFH bucket. Giá trị được lưu từ bit 0 đến bit 4 là số lượng các cấp phát đang hoạt động cùng kích thước cấp phát của bucket, giá trị này được tăng lên khi cấp phát và giảm khi giải phóng. Giá trị được lưu trong bit 5 đến bit 15 là số lượng yêu cầu cấp phát có cùng kích thước cấp phát của bucket, nó được tăng lên khi cấp phát.
+   
+**_HEAP_LFH_BUCKET Structure**
+
+![](pic/pic2.PNG)
+![](pic/pic2.PNG)
+![](pic/pic2.PNG)
+![](pic/pic2.PNG)
+![](pic/pic2.PNG)
+![](pic/pic2.PNG)
+
 
