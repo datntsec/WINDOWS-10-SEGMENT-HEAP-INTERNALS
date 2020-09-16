@@ -564,7 +564,7 @@ windbg> dt ntdll!_HEAP_LFH_CONTEXT -r
 ```
    - BackendCtx - trỏ đến cấu trúc _SEGMENT_HEAP (HeapBase).
    - Callbacks – Các callback được mã hóa (xem thêm ở phần 3.5) để quản lý các phần mở rộng LFH subsegments và LFH context.
-   - MaxAffinity - Số lượng tối đa slot giống nhau có thể được tạo.
+   - MaxAffinity - Số lượng tối đa affinity slot có thể được tạo.
    - SubsegmentCache - Tracks cached (unused) LFH subsegments.
    - Buckets - Mảng các con trỏ trỏ đến các LFH bucket. Nếu một bucket được kích hoạt, bit 0 của con trỏ này sẽ clear và nó sẽ trỏ đến cấu trúc _HEAP_LFH_BUCKET. Mặt khác (nếu bit 0 được set), con trỏ trỏ đến cấu trúc _HEAP_LFH_ONDEMAND_POINTER được sử dụng để theo dõi việc sử dụng LFH bucket.
 
@@ -586,11 +586,330 @@ windbg> dt ntdll!_HEAP_LFH_ONDEMAND_POINTER
    
 **_HEAP_LFH_BUCKET Structure**
 
-![](pic/pic2.PNG)
-![](pic/pic2.PNG)
-![](pic/pic2.PNG)
-![](pic/pic2.PNG)
-![](pic/pic2.PNG)
-![](pic/pic2.PNG)
+Nếu bucket được kích hoạt, entry cho bucket trong LfhContext.Buckets là một con trỏ trỏ đến cấu trúc _HEAP_LFH_BUCKET:
+```
+windbg> dt ntdll!_HEAP_LFH_BUCKET
+   +0x000 State : _HEAP_LFH_SUBSEGMENT_OWNER
+   +0x038 TotalBlockCount : Uint8B
+   +0x040 TotalSubsegmentCount : Uint8B
+   +0x048 ReciprocalBlockSize : Uint4B
+   +0x04c Shift : UChar
+   +0x050 AffinityMappingLock : _RTL_SRWLOCK
+   +0x058 ContentionCount : Uint4B
+   +0x060 ProcAffinityMapping : Ptr64 UChar
+   +0x068 AffinitySlots : Ptr64 Ptr64 _HEAP_LFH_AFFINITY_SLOT
+```
+   - TotalBlockCount - Tổng số LFH blocks trong tất cả LFH subsegments liên quan đến bucket.
+   - TotalSubsegmentCount - Tổng số LFH subsegments liên quan đến bucket.
+   - ContentionCount - Số lượng contention được xác định khi cấp phát các block từ các LFH subsegment. Mỗi khi trường này đạt đến RtlpHpLfhContentionLimit, một affinity slot mới sẽ được tạo cho bộ xử lý của luồng yêu cầu.
+   - ProcAffinityMapping - Trỏ đến một mảng các index có kích thước là BYTE đến AffinitySlots. Điều này được sử dụng để chỉ định linh hoạt bộ xử lý cho các affinity slot (sẽ thảo luận ở phần sau). Ban đầu, tất cả được set thành 0, có nghĩa là tất cả các bộ xử lý được chỉ định cho affinity slot ban đầu được tạo khi bucket được kích hoạt.
+   - AffinitySlots - Trỏ tới một mảng các con trỏ affinity slot (_HEAP_LFH_AFFINITY_SLOT*). Khi bucket được kích hoạt, ban đầu chỉ có một vị trí được tạo, để tìm được nhiều contention hơn, nơi các affinity slot mới sẽ được tạo.
+   
+**_HEAP_LFH_AFFINITY_SLOT Structure**
+
+Một affinity slot sở hữu các LFH subsegment nơi các LFH block được cấp phát từ đó. Ban đầu, chỉ có một affinity slot được tạo khi bucket được kích hoạt và tất cả các bộ xử lý được chỉ định cho affinity slot ban đầu.
+
+Bởi vì ban đầu chỉ có một affinity slot được tạo, điều đó có nghĩa là tất cả các bộ xử lý sẽ sử dụng cùng một tập hợp các LFH subsement và do đó, có thể xảy ra tranh chấp. Nếu quá nhiều contention được tìm thấy, một affinity slot mới sẽ được tạo và bộ xử lý của luồng yêu cầu được chỉ định lại cho affinity slot mới thông qua trường ProcAffinityMapping trong nhóm.
+
+Chỉ có một trường trong affinity slot và cấu trúc của nó sẽ được mô tả ở phần tiếp theo.
+```
+windbg> dt ntdll!_HEAP_LFH_AFFINITY_SLOT
+   +0x000 State : _HEAP_LFH_SUBSEGMENT_OWNER
+```
+
+Dưới đây là minh họa về mối quan hệ giữa bucket, bộ xử lý, affinity slots và các LFH subsegment:
+
+![](pic/pic23.PNG)
+
+**_HEAP_LFH_SUBSEGMENT_OWNER Structure**
+
+Cấu trúc subsegment owner được sử dụng bởi affinity slot (LfhAffinitySlot.State) để theo dõi các LFH subsegment mà nó sở hữu, nó có các trường sau:
+```
+windbg> dt ntdll!_HEAP_LFH_SUBSEGMENT_OWNER
+   +0x000 IsBucket : Pos 0, 1 Bit
+   +0x000 Spare0 : Pos 1, 7 Bits
+   +0x001 BucketIndex : UChar
+   +0x002 SlotCount : UChar
+   +0x002 SlotIndex : UChar
+   +0x003 Spare1 : UChar
+   +0x008 AvailableSubsegmentCount : Uint8B
+   +0x010 Lock : _RTL_SRWLOCK
+   +0x018 AvailableSubsegmentList : _LIST_ENTRY
+   +0x028 FullSubsegmentList : _LIST_ENTRY
+```
+   - AvailableSubsegmentCount - Số lượng LFH subsegments trong AvailableSubsegmentList.
+   - AvailableSubsegmentList - Danh sách liên kết của các LFH subsegment có các free LFH block.
+   - FullSubsegmentList - Danh sách liên kết của các of LFH subsegment không có các free LFH block.
+   
+**_HEAP_LFH_SUBSEGMENT Structure**
+
+Các LFH subsegment là nơi các LFH block được cấp phát từ đó. Các LFH subsegment được tạo và khởi tạo thông qua hàm RtlpHpLfhSubsegmentCreate() và sẽ có cấu trúc _HEAP_LFH_SUBSEGMENT sau làm header:
+```
+windbg> dt ntdll!_HEAP_LFH_SUBSEGMENT -r
+   +0x000 ListEntry : _LIST_ENTRY
+   +0x000 Link : _SLIST_ENTRY
+   +0x010 Owner : Ptr64 _HEAP_LFH_SUBSEGMENT_OWNER
+   +0x010 DelayFree : _HEAP_LFH_SUBSEGMENT_DELAY_FREE
+      +0x000 DelayFree : Pos 0, 1 Bit
+      +0x000 Count : Pos 1, 63 Bits
+      +0x000 AllBits : Ptr64 Void
+   +0x018 CommitLock : _RTL_SRWLOCK
+   +0x020 FreeCount : Uint2B
+   +0x022 BlockCount : Uint2B
+   +0x020 InterlockedShort : Int2B
+   +0x020 InterlockedLong : Int4B
+   +0x024 FreeHint : Uint2B
+   +0x026 Location : UChar
+   +0x027 Spare : UChar
+   +0x028 BlockOffsets : _HEAP_LFH_SUBSEGMENT_ENCODED_OFFSETS
+      +0x000 BlockSize : Uint2B
+      +0x002 FirstBlockOffset : Uint2B
+      +0x000 EncodedData : Uint4B
+   +0x02c CommitUnitShift : UChar
+   +0x02d CommitUnitCount : UChar
+   +0x02e CommitStateOffset : Uint2B
+   +0x030 BlockBitmap : [1] Uint8B
+```
+   - Listentry - Mỗi LFH subsegment là một node của một trong các danh sách LFH segment của affinity slot (LfhAffinitySlot.AvailableSubsegmentList hoặc LfhAffinitySlot.FullSubsegmentList).
+   - Owner - Con trỏ trỏ đến affinity slot cái mà sở hữu LFH subsegment.
+   - FreeHint - Block index của LFH block được cấp phát hoặc giải phóng gần đây. Được sử dụng trong thuật toán phân bổ khi tìm kiếm free LFH block.
+   - Location - Location của LFH subsegment này trong danh sách các LFH subsegment của affinity slot: _0: AvailableSubsegmentList, 1: FullSubsegmentList._
+   - FreeCount - Số lượng free block trong LFH subsegment.
+   - BlockCount - Tổng số block trong LFH subsegment.
+   - BlockOffsets - Cấu trúc con có kích thước DWORD được mã hóa (xem thêm ở phần 3.7) chứa kích thước của mỗi LFH block và offset của LFH block đầu tiên trong LFH subsegment.
+      - BlockSize - Kích thước của mỗi LFH block trong LFH subsegment.
+      - FirstBlockOffset - Offset của LFH block đầu tiên trong LFH subsegment.
+   - CommitStateOffset - Offset của mảng commit state trong LFH subsegment. Một phân đoạn LFH được chia thành nhiều “commit portions”; commit state cam kết là một mảng các giá trị có kích thước WORD đại diện cho commit state của mỗi “commit portions”.
+   - BlockBitmap - Mỗi LFH block được đại diện bằng 2 bits trong block bitmap này (sẽ được bàn luận sau).
+
+Dưới đây là một minh họa về một LFH subsegment:
+
+![](pic/pic24.PNG)
+
+Và dưới đây là minh họa về các trường và cấu trúc dữ liệu khác nhau để support LFH component:
+
+![](pic/pic25.PNG)
+
+**LFH Block Bitmap**
+
+Mỗi LFH block không có block header ở đầu, thay vào đó, một block bitmap (LfhSubsegment.BlockBitmap) được sử dụng để theo dõi trạng thái của mỗi LFH block trong LFH subsegment.
+
+Mỗi LFH block được biểu diễn bằng hai bit trong block bitmap. Bit 0 đại diện cho BUSY bit và bit 1 đại diện cho UNUSED BYTES bit. Nếu UNUSED BYTES bit được set, điều đó có nghĩa là có sự khác biệt giữa UserSize và LFH block size, và hai byte cuối cùng của LFH block được coi là giá trị 16 bit endian low để thể hiện sự khác biệt. Nếu số unused bytes là 1, high bit của giá trị 16 bit này được set và phần còn lại của các bit này không được sử dụng, ngược lại, high bit là clear, 14 bit thấp được sử dụng để lưu trữ giá trị unused byte.
+
+Block bitmap cũng được chia thành các chunk có kích thước QWORD (64 bit), được gọi là BitmapBits trong bài báo này, với mỗi BitmapBit đại diện cho 32 LFH block.
+
+Hình bên dưới minh họa về LFH block bitmap:
+
+![](pic/pic26.PNG)
+
+**LFH Bucket Activation**
+
+Trong mọi yêu cầu phân bổ có kích thước phân bổ là <= 16.368 (0x3FF0) byte, RtlpHpLfhContextAllocate() trước tiên được gọi để kiểm tra xem có bucket tương ứng với kích thước phân bổ có được kích hoạt hay không. Nếu bucket được kích hoạt, việc phân bổ sẽ được thực hiện bởi LFH.
+
+Nếu bucket chưa được kích hoạt, bucket usage counter được cập nhật. Nếu sau khi cập nhật, bucket usage counter đạt đến một giá trị cụ thể, thì bucket được kích hoạt thông qua hàm RtlpHpLfhBucketActivate() và LFH sẽ thực hiện yêu cầu cấp phát. Nếu không, VS allocation component cuối cùng sẽ xử lý yêu cầu cấp phát.
+
+Kích hoạt bucket xảy ra nếu có 17 phân bổ đang hoạt động cho kích thước phân bổ của bucket. Phân bổ đang hoạt động thứ 17 sẽ kích hoạt bucket, no và các phân bổ tiếp theo sau đó sẽ do LFH thực hiện.
+
+Kích hoạt bucket cũng xảy ra nếu có 2.040 yêu cầu phân bổ cho kích thước phân bổ của bucket, bất kể các block từ phân bổ trước đó đã được giải phóng hay chưa. Phân bổ thứ 2.040 sẽ kích hoạt bucket, nó và các phân bổ tiếp theo sau đó sẽ được thực hiện bởi LFH.
+
+**LFH Allocation**
+
+LFH Allocation được thực hiện thông qua hàm RtlpHpLfhContextAllocate(), nó có các đối số sau:
+```
+PVOID RtlpHpLfhContextAllocate(_HEAP_LFH_CONTEXT* LfhContext, SIZE_T UserSize, SIZE_T AllocSize, ULONG Flags)
+```
+
+Hành động đầu tiên được thực hiện bởi RtlpHpLfhContextAllocate() là kiểm tra xem bucket tương ứng với kích thước phân bổ có được kích hoạt hay không. Nếu bucket chưa được kích hoạt, usage counter của bucket sẽ được cập nhật và nếu usage của bucket sau cập nhật khi đạt giá trị có thể được kích hoạt, bucket sẽ được kích hoạt và phân bổ LFH sẽ tiếp tục.
+
+Tiếp theo, affinity slot thích hợp trong bucket được chọn tùy thuộc vào bộ xử lý của luồng yêu cầu và ánh xạ từ bộ xử lý đến affinity slot (LfhContext.ProcAffinityMapping). Sau khi affinity slot được chọn, phân bổ trong LFH subsegment có sẵn của affinity slot sẽ được thực hiện thông qua lệnh gọihàm RtlpHpLfhSlotAllocate().
+
+Mặt khác, RtlpHpLfhSlotAllocate() trước tiên đảm bảo rằng slot đó có LFH subsegment là khả dụng bằng cách tạo một LFH subsegment mới hoặc sử dụng lại LFH subsegment đã lưu trong bộ nhớ cache nếu cần. Sau đó, RtlpHpLfhSlotAllocate() sẽ gọi RtlpHpLfhSlotReserveBlock() để cố gắng dành một block từ một trong các LFH subsegment có sẵn của affinity slot bằng cách giảm atomically trường FreeCount của LFH subsegment. Quá nhiều tranh chấp được phát hiện từ RtlpHpLfhSlotReserveBlock() cuối cùng sẽ khiến một affinity slot mới được tạo cho bộ xử lý của chuỗi yêu cầu.
+
+Nếu RtlpHpLfhSlotReserveBlock() có thể đặt trước một block ở một trong các LFH subsegment của affinity slot, thì RtlpHpLfhSlotAllocate() sẽ gọi RtlpHpLfhSubsegmentAllocateBlock() để thực hiện cấp phát từ LFH subsegment ở block đã được đặt trước.
+
+Logic của hàm RtlpHpLfhSubsegmentAllocateBlock() để tìm kiếm một free LFH block trong LFH subsegment được biểu diễn theo sơ đồ bên dưới:
+
+![](pic/pic27.PNG)
+
+Phần lớn là gọi hàm RtlpLfhBlockBitmapAllocate() (sơ đồ trên chỉ là một cách diễn đạt ngắn gọn) để quét block bitmap để tìm một clear BUSY bit. Vị trí bắt đầu của việc tìm kiếm trong block bitmap được đặt trong LfhSubsegment.FreeHint và việc lựa chọn một clear BUSY bit là ngẫu nhiên.
+
+Logic bắt đầu bằng cách trỏ BlockBitmapPos trỏ tới một BitmapBits trong block bitmap ở FreeHint (block index của LFH block được cấp phát hoặc giải phóng gần đây). Sau đó, nó di chuyển BlockBitmapPos về phía trước cho đến khi nó tìm thấy một BitmapBits trong đó có ít nhất 1 BUSY bit là clear. Nếu BlockBitmapPos đến cuối block bitmap, thì BlockBitmapPos được trỏ đến đầu block bitmap và tiếp tục tìm kiếm.
+
+Khi một BitmapBits được chọn, logic sẽ chọn ngẫu nhiên một vị trí bit trong BitmapBits trong đó BUSY bit là clear. Sau khi vị trí bit (BitIndex) được chọn, BUSY bit (và UNUSED BYTES bit, nếu cần) ở vị trí bit được set, khi đó, giá trị được trỏ tới bởi BlockBitmapPos được cập nhật atomically với giá trị BitmapBits đã sửa đổi. Cuối cùng, vị trí bit cùng với giá trị của BlockBitmapPos được biến thành địa chỉ của LFH block được cấp phát (UserAddress). Lưu ý rằng logic thử lại khi cập nhật không thành công không được bao gồm trong sơ đồ trên.
+
+Dưới đây là hình minh họa trong đó 8 LFH block được phân bổ tuần tự từ một new LFH subsegment, hãy lưu ý vị trí ngẫu nhiên của mỗi phân bổ LFH:
+
+![](pic/pic28.PNG)
+
+**LFH Freeing**
+
+LFH freeing được thực hiện thông qua hàm RtlpHpLfhSubsegmentFreeBlock(), có các đối số sau:
+```
+BOOLEAN RtlpHpLfhSubsegmentFreeBlock(_HEAP_LFH_CONTEXT* LfhContext, _HEAP_LFH_SUBSEGMENT* LfhSubsegment, PVOID UserAddress, ULONG Flags)
+```
+
+Trước tiên, freeing code sẽ tính toán LFH block index của UserAddress (LfhBlockIndex). Nếu LfhBlockIndex index nhỏ hơn hoặc bằng LfhSubsegment.FreeHint, thì LfhSubsegment.FreeHint sẽ được set với giá trị của LfhBlockIndex.
+
+Next, the corresponding BUSY and UNUSED BYTES bits of the LFH block in the block bitmap are atomically cleared. Then, the LFH subsegment’s FreeCount field is atomically incremented making the LFH block available for allocation.
+Tiếp theo, các bit BUSY và UNUSED BYTES tương ứng của LFH block trong block bitmap được atomically cleared. Sau đó, trường FreeCount của phân đoạn LFH được tăng atomically làm cho khối LFH có sẵn để phân bổ.
+
+### 2.5. LARGE BLOCKS ALLOCATION
+Large blocks allocation được sử dụng để phân bổ block có kích thước từ 520,193 byte trở lên (>= 0x7F001). Các block lớn không có block header ở đầu và được cấp phát và giải phóng bằng các virtual memory function do NT Memory Manager cung cấp.
+
+**_HEAP_LARGE_ALLOC_DATA Structure**
+
+Mỗi block lớn có một siêu dữ liệu (metadata) tương ứng với cấu trúc sau:
+```
+windbg> dt ntdll!_HEAP_LARGE_ALLOC_DATA
+   +0x000 TreeNode : _RTL_BALANCED_NODE
+   +0x018 VirtualAddress : Uint8B
+   +0x018 UnusedBytes : Pos 0, 16 Bits
+   +0x020 ExtraPresent : Pos 0, 1 Bit
+   +0x020 Spare : Pos 1, 11 Bits
+   +0x020 AllocatedPages : Pos 12, 52 Bits
+```
+   - TreeNode - Mỗi large block metadata là một node của large blocks metadata tree (HeapBase.LargeAllocMetadata).
+   - VirtualAddress - Địa chỉ của block. 16 bits đầu tiên được sử dụng cho trường UnusedBytes.
+   - UnusedBytes - Độ chênh lệch giữa UserSize và committed size của block.
+   - AllocatedPages – Committed size của block trong pages.
+   
+Điều thú vị là metadata này được lưu trữ trong một heap riêng biệt mà địa chỉ của nó được lưu trữ trong biến toàn cục RtlpHpMetadataHeap.
+
+**Large Block Allocation**
+
+Large block allocation được thực hiện thông qua hàm RtlpHpLargeAlloc(), có các đối số sau:
+```
+PVOID RtlpHpLargeAlloc(_SEGMENT_HEAP* HeapBase, SIZE_T UserSize, SIZE_T AllocSize, ULONG Flags)
+```
+
+Việc phân bổ block lớn rất đơn giản vì không có free tree/list nào để tham khảo. Đầu tiên, việc phân bổ metadata của block từ metadata heap đã được thực hiện. Tiếp theo, thông qua NtAllocateVirtualMemory(), một virtual memory có kích thước bằng kích thước phân bổ cộng với 0x1000 byte cho guard page sẽ được reserve. Sau đó, một kích thước bằng với kích thước cấp phát được commit từ bộ nhớ được reserve ban đầu, để guard page cuối cùng vẫn ở reserved state.
+
+Sau khi phân bổ block, các trường metadata của block được set và large allocation bitmap (RtlpHpLargeAllocationBitmap) được cập nhật để đánh dấu địa chỉ của block (thực tế là UserAddress >> 16) là một large block allocation.
+
+Cuối cùng, metadata của block được chèn vào large blocks metadata tree (HeapBase.LargeAllocMetadata) bằng cách sử dụng địa chỉ của block làm key, sau đó, địa chỉ của block (UserAddress) được trả lại cho caller.
+
+Dưới đây là minh họa về các cấu trúc và biến toàn cục khác nhau support large blocks allocation:
+
+![](pic/pic29.PNG)
+
+**Large Block Freeing**
+Large block freeing được thực hiện thông qua hàm RtlpHpLargeFree(), có các đối số sau:
+```
+BOOLEAN RtlpHpLargeFree(_SEGMENT_HEAP* HeapBase, PVOID UserAddress, ULONG Flags)
+```
+
+Tương tự như large block allocation, freeing một large block là một quá trình đơn giản. Đầu tiên, metadata của block lớn được truy xuất thông qua RtlpHpLargeAllocGetMetadata() và sau đó được xóa khỏi large blocks metadata tree sau đó.
+
+Tiếp theo, large allocation bitmap được cập nhật để bỏ đánh dấu địa chỉ của block là một large block allocation. Sau đó, virtual memory của block được giải phóng và mettadata của block được giải phóng.
+
+### 2.6. BLOCK PADDING
+Trong các ứng dụng không được chọn tham gia theo mặc định để sử dụng Segment Heap (tức là: không phải ứng dụng Windows và không phải là file thực thi hệ thống như đã thảo luận trong phần 2.1), một vùng padding 16 (0x10) byte bổ sung được thêm vào block. Phần padding làm tăng tổng kích thước block cần thiết để phân bổ và thay đổi bố cục của backend block, VS block và LFH block.
+
+Dưới đây là bố cục của block backend, VS và LFH khi thêm padding:
+
+![](pic/pic30.PNG)
+
+Padding cần được xem xét khi phân tích các block được phân bổ, đặc biệt nếu ứng dụng được quan sát không phải là ứng dụng Windows hay tiến trình hệ thống.
+
+### 2.7. SUMMARY AND ANALYSIS: INTERNALS
+
+Việc triển khai Segment Heap và NT Heap là rất khác nhau. Sự khác biệt chính có thể được quan sát thấy trong cấu trúc dữ liệu được sử dụng, việc sử dụng free tree thay vì free list để theo dõi các free block và việc sử dụng thuật toán tìm kiếm phù hợp nhất với ưu tiên cho block được commit nhất khi tìm kiếm free block.
+
+Ngoài ra, mặc dù LFH trong Segment Heap và NT Heap có cùng mục đích giúp giảm phân mảnh và có chung thiết kế, việc triển khai LFH trong Segment Heap đã được xem xét kỹ lượng. Sự khác biệt chính có thể được quan sát trong cấu trúc dữ liệu được sử dụng, block bitmap đại diện cho các LFH block và sự vắng mặt của block header ở đầu mỗi LFH block.
+
+## 3. SECURITY MECHANISMS
+Phần này thảo luận về các cơ chế khác nhau được thêm vào Segment Heap để làm cho việc tấn công heap metadata trở nên khó hoặc unreliable. Trong một số trường hợp, nó làm cho việc thực hiện thao tác chính xác với bố cục heap trở nên unreliable.
+
+### 3.1. FAST FAIL ON LINKED LIST NODE CORRUPTION
+Segment Heap sử dụng danh sách liên kết để theo dõi các segment và các subsegment. Tương tự như NT Heap, các kiểm tra đã được thêm vào trong các thao tác chèn và loại bỏ node trong danh sách liên kết để ngăn việc ghi tùy ý cổ điển do các node của danh sách liên kết bị corrupt. Nếu một nút bị corrupt được phát hiện, tiến trình sẽ kết thúc ngay lập tức thông qua cơ chế FastFail:
+
+![](pic/pic31.PNG)
+
+### 3.2. FAST FAIL ON RB TREE NODE CORRUPTION
+Segment Heap sử dụng RB trees để theo dõi các free backend blocks và free VS blocks. Nó cũng được sử dụng để theo dõi large blocks metadata. Các hàm NTDLL được exported  RtlRbInsertNodeEx() và RtlRbRemoveNode() thực hiện việc chèn và loại bỏ node tương ứng ngoài việc đảm bảo rằng RB tree được cân bằng. Để ngăn việc ghi tùy ý do các node của cây bị corrupt, các hàm nói trên thực hiện validation khi thao tác với các node của RB tree. Tương tự như validation các node trong danh sách liên kết, việc validation các node của RB tree không thành công sẽ gây ra việc gọi cơ chế FastFail.
+
+Trong ví dụ validation bên dưới, parent của left child sẽ bị điều khiển, do đó, có thể dẫn đến việc ghi tùy ý nếu con trỏ ParentValue của left child bị kẻ tấn công kiểm soát. Để ngăn việc ghi tùy ý, các child node của parent được kiểm tra xem một trong số chúng có thực sự là left child hay không.
+
+![](pic/pic32.PNG)
+
+### 3.3. HEAP ADDRESS RANDOMIZATION
+Để làm cho việc đoán địa chỉ heap trở nên unreliable, tính ngẫu nhiên được thêm vào vị trí của heap trong virtual memory.
+
+Việc ngẫu nhiên hóa địa chỉ heap được thực hiện bởi hàm RtlpHpSegHeapAllocate(), được sử dụng để tạo heap. Nó được thực hiện bằng cách reserving virtual memory có kích thước bằng lấy kích thước của heap cộng với kích thước được tạo ngẫu nhiên (kích thước ngẫu nhiên là bội số của 64KB). Sau khi reserving virtual memory, phần đầu của reserved virtual memory có kích thước bằng với kích thước ngẫu nhiên được tạo ban đầu sẽ được giải phóng. Sau đó, HeapBase được trỏ đến đầu phần chưa được giải phóng của reserved virtual memory ban đầu.
+
+![](pic/pic33.PNG)
+
+### 3.4. GUARD PAGES
+Khi các VS subsegment, LFH subsegment và các large block được cấp phát, một guard page được thêm vào cuối subsegment/block. Đối với các VS và LFH subsegment, kích thước subsegment phải >= 64KB để thêm guard page.
+
+Guard page ngăn chặn sequential overflow từ các VS block, LFH block và large block khỏi corrupting adjacent data bên ngoài subsegment (đối với LFH/VS blocks) hoặc bên ngoài block (đối với large blocks).
+
+![](pic/pic34.PNG)
+
+Mặt khác, các backend block không có guard page sau chúng, sẽ cho phép overflow gây corrupt adjacent data bên ngoài block.
+
+![](pic/pic35.PNG)
+
+### 3.5. FUNCTION POINTER ENCODING
+Trong trường hợp kẻ tấn công có thể xác định địa chỉ của heap và giả định rằng kẻ tấn công đã bypass Control Flow Guard (CFG), kẻ tấn công có thể nhắm mục tiêu đến các function pointer được lưu trữ trong HeapBase như một cách để kiểm soát trực tiếp luồng thực thi. Để bảo vệ các function pointer này khỏi sự sửa đổi nhỏ, các function pointer được mã hóa bằng cách sử dụng Key heap và LFH/VS context address.
+
+![](pic/pic36.PNG)
+
+### 3.6. VS BLOCK HEADER ENCODING
+Không giống như các backend/LFH/large block, các VS block có header ở đầu mỗi block, điều này làm cho VS block headers có khả năng trở thành mục tiêu trong buffer overflow. Để bảo vệ các phần quan trọng của VS block header khỏi sửa đổi nhỏ, chúng được mã hóa bằng cách sử dụng LFH key và VS block address.
+
+![](pic/pic37.PNG)
+
+### 3.7. LFH SUBSEGMENT BLOCKOFFSETS ENCODING
+Để bảo vệ các trường LFH subsegment header quan trọng khỏi sửa đổi nhỏ, trường block size và trường first block offse trong LFH subsegment header được mã hóa bằng cách sử dụng LFH key và LFH subsegment address.
+
+![](pic/pic38.PNG)
+
+### 3.8. LFH ALLOCATION RANDOMIZATION
+Để làm cho việc khai thác buffer overflows dựa trên LFH và use-after-frees trở nên unreliable, thành phần LFH sẽ chọn ngẫu nhiên một free LFH block để sử dụng trong một yêu cầu cấp phát. Việc phân bổ ngẫu nhiên làm cho việc đặt LFH block mục tiêu liền kề với LFH block có thể bị overflow là unreliable và nó cũng khiến việc sử dụng lại LFH block được giải phóng gần đây cũng trở thành unreliable. Thuật toán phân bổ ngẫu nhiên đã được thảo luận trong phần 2.4 “LFH Allocation”.
+
+Dưới đây là hình minh họa trong đó 8 LFH block được cấp phát tuần tự từ một LFH subsegment mới:
+
+![](pic/pic39.PNG)
+
+Lưu ý rằng phân bổ đầu tiên là trên LFH block thứ 20, phân bổ thứ hai là trên block thứ 30, phân bổ thứ ba là trên block thứ 5, v.v
+
+### 3.9. SUMMARY AND ANALYSIS: SECURITY MECHANISMS
+Các cơ chế bảo mật được áp dụng trong Segment Heap chủ yếu là sự chuyển giao các cơ chế bảo mật từ NT Heap, trong đó đáng chú ý là các guard page và ngẫu nhiên phân bổ LFH mới xuất hiện khi Windows 8 được phát hành. Dựa trên điều này, và cách các trường quan trọng của cấu trúc dữ liệu mới được bảo vệ, Segment Heap có thể so sánh với NT Heap về cơ chế bảo mật được áp dụng. Tuy nhiên, vẫn chưa thấy cấu trúc dữ liệu Segment Heap mới sẽ hoạt động như thế nào khi nghiên cứu tấn công metadata của Segment Heap dần trở nên phổ biến.
+
+Liên quan đến thao tác bố cục heap, thuật toán tìm kiếm phù hợp nhất và cơ chế tách free block của backend và VS component được chào đón hơn với thao tác bố trí heap so với LFH component sử dụng ngẫu nhiên hóa phân bổ.
+
+## 4. CASE STUDY
+Phần này kiểm tra cách bố trí của một heap do Segment Heap quản lý có thể được thao tác như thế nào bằng cách thảo luận về cách tận dụng lỗ hổng bộ nhớ để ghi tùy ý reliable trong context của nội dung tiến trình Edge.
+
+### 4.1. CVE-2016-0117 VULNERABILITY DETAILS
+Lỗ hổng bảo mật (CVE-2016-0117, MS16-028) nằm trong trình thông dịch PostScript của WinRT PDF cho các Type 4 (PostScript Calculator) function. Các hàm PostScript Calculator sử dụng một tập hợp con của các toán tử của ngôn ngữ PostScript và các toán tử PostScript này sử dụng ngăn xếp toán hạng PostScript (PostScript operand stack) khi thực hiện các chức năng của chúng.
+
+Ngăn xếp toán hạng PostScript là một vectơ chứa các con trỏ 0x65 CType4Operand. Mặt khác, mỗi CType4Operand là một cấu trúc dữ liệu bao gồm một DWORD đại diện cho type và một DWORD đại diện cho value trong ngăn xếp toán hạng PostScript.
+
+Ngăn xếp toán hạng PostScript và CType4Operands được phân bổ từ MSVCRT heap được quản lý bởi Segment Heap nếu WinRT PDF được load trong context của nội dung tiến trình Edge:
+
+![](pic/pic40.PNG)
+
+
+![](pic/pic41.PNG)
+
+![](pic/pic42.PNG)
+
+![](pic/pic43.PNG)
+
+![](pic/pic44.PNG)
+
+![](pic/pic45.PNG)
+
+![](pic/pic46.PNG)
+
+![](pic/pic47.PNG)
+
+![](pic/pic48.PNG)
+
+![](pic/pic49.PNG)
+
+![](pic/pic5.PNG)
 
 
