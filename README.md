@@ -885,18 +885,72 @@ Phần này kiểm tra cách bố trí của một heap do Segment Heap quản l
 ### 4.1. CVE-2016-0117 VULNERABILITY DETAILS
 Lỗ hổng bảo mật (CVE-2016-0117, MS16-028) nằm trong trình thông dịch PostScript của WinRT PDF cho các Type 4 (PostScript Calculator) function. Các hàm PostScript Calculator sử dụng một tập hợp con của các toán tử của ngôn ngữ PostScript và các toán tử PostScript này sử dụng ngăn xếp toán hạng PostScript (PostScript operand stack) khi thực hiện các chức năng của chúng.
 
-Ngăn xếp toán hạng PostScript là một vectơ chứa các con trỏ 0x65 CType4Operand. Mặt khác, mỗi CType4Operand là một cấu trúc dữ liệu bao gồm một DWORD đại diện cho type và một DWORD đại diện cho value trong ngăn xếp toán hạng PostScript.
+Ngăn xếp toán hạng PostScript là một vectơ chứa 0x65 con trỏ CType4Operand. Mặt khác, mỗi CType4Operand là một cấu trúc dữ liệu bao gồm một DWORD đại diện cho type và một DWORD đại diện cho value trong ngăn xếp toán hạng PostScript.
 
 Ngăn xếp toán hạng PostScript và CType4Operands được phân bổ từ MSVCRT heap được quản lý bởi Segment Heap nếu WinRT PDF được load trong context của nội dung tiến trình Edge:
 
 ![](pic/pic40.PNG)
 
+Vấn đề là trình thông dịch PostScript không thể validate nếu index ngăn xếp toán hạng PostScript vượt qua phần cuối của ngăn xếp toán hạng PostScript (index ngăn xếp toán hạng PostScript là 0x65), cho phép một tham chiếu của con trỏ CType4Operand nằm ngay sau phần cuối của ngăn xếp toán hạng PostScript.
+
+Nếu kẻ tấn công có thể cấy ghép một địa chỉ đích ngay sau phần cuối của ngăn xếp toán hạng PostScript, kẻ tấn công sẽ có thể thực hiện ghi bộ nhớ vào địa chỉ đích thông qua hoạt động PostScript để push một giá trị trong ngăn xếp toán hạng PostScript.
+
+Trong hình minh họa bên dưới, multiple integers (1094795585 hoặc 0x41414141) được push vào ngăn xếp toán hạng PostScript với 0x41414141 cuối cùng được push đến index không hợp lệ 0x65 của ngăn xếp toán hạng PostScript:
 
 ![](pic/pic41.PNG)
 
+### 4.2. PLAN FOR IMPLANTING THE TARGET ADDRESS
+Sau khi hiểu được lỗ hổng, kế hoạch sau được sử dụng để cấy địa chỉ target nằm sau phần cuối ngăn xếp toán hạng PostScript:
+   1. Phân bổ controlled buffer và set độ lệch 0x328 của controlled buffer đến địa chỉ đích (0x4242424242424242). Để đảm bảo reliability, controlled buffer và ngăn xếp toán hạng PostScript sẽ được VS cấp phát thay vì được LFH cấp phát.
+   2. Free controlled buffer.
+   3. Ngăn xếp toán hạng PostScript sẽ được phân bổ trong free VS block của freed controlled buffer.
+   
+Dưới đây sẽ là hình ảnh minh họa cho các bước trên:
+
 ![](pic/pic42.PNG)
 
+Việc thực hiện kế hoạch trên đòi hỏi khả năng thao tác MSVCRT heap để cấy địa chỉ target một cách repliable sau ngăn xếp toán hạng PostScript, điều này bao gồm khả năng phân bổ block được kiểm soát từ MSVCRT heap và khả năng giải phóng controlled block. Ngoài ra, sẽ có một số vấn đề sẽ ảnh hưởng đến repliable (chẳng hạn như việc hợp nhất các free block) cần được xử lý. Các phần tiếp theo sẽ thảo luận về các giải pháp cho các yêu cầu/vấn đề này.
+
+### 4.3. MANIPULATING THE MSVCRT HEAP WITH CHAKRA’S ARRAYBUFFER
+JavaScript được nhúng trong PDF có khả năng đáp ứng yêu cầu của thao tác MSVCRT,heap, nhưng thật không may, khi viết, WinRT PDF vẫn không hỗ trợ nhúng JavaScript.
+
+May mắn thay, một giải pháp có thể được tìm thấy trong triển khai ArrayBuffer của Chakra (Edge’s JavaScript engine). Tương tự như ngăn xếp toán hạng PostScript của WinRT PDF, data buffer của ArrayBuffer của Chakra cũng được cấp phát từ MSVCRT heap thông qua msvcrt!malloc() nếu ArrayBuffer có kích thước nhất định (tức là: kích thước nhỏ hơn 64KB, hoặc đối với kích thước> = 64KB, kiểm tra bổ sung được thực hiện).
+
+Điều này có nghĩa là mã JavaScript trong tệp HTML có thể cấp phát và giải phóng controlled buffer khỏi MSVCRT heap (bước 1 và bước 2 của plan). Sau đó, mã JavaScript có thể đưa phần tử <embed> vào trang khiến tệp PDF chứa trình kích hoạt lỗ hổng được WinRT PDF load. Khi load tệp PDF, WinRT PDF sẽ phân bổ ngăn xếp toán hạng PostScript từ MSVCRT heap và free VS block của freed controlled buffer sau đó sẽ được trình quản lý heap trả về WinRT PDF để đáp ứng yêu cầu phân bổ (bước 3 của kế hoạch).
+
+**Allocation and Setting Controlled Values**
+
+Trong hình minh họa bên dưới, mã JavaScript trong tệp HTML đã được khởi tạo một ArrayBuffer với kích thước 0x340, từ đó dẫn đến phân bổ khối 0x340 byte từ MSVCRT heap; offset 0x328 của block sau đó được set  địa chỉ target:
+
 ![](pic/pic43.PNG)
+
+**LFH Bucket Activation**
+
+Kích hoạt LFH bucket cho một kích thước phân bổ cụ thể cũng là một khả năng quan trọng và việc sử dụng nó trong kế hoạch sẽ được thảo luận sau. Để kích hoạt LFH bucket cho một kích thước phân bổ cụ thể, 17 đối tượng ArrayBuffer có cùng kích thước cần phải được khởi tạo:
+``` c
+lfhBucketActivators = [];
+for (var i = 0; i < 17; i++) {
+	lfhBucketActivators.push(new ArrayBuffer(blockSize));
+}
+```
+
+**Freeing and Garbage Collection**
+
+Giải phóng các block liên quan đến việc loại bỏ các tham chiếu đến đối tượng ArrayBuffer và sau đó kích hoạt một garbage collection. Lưu ý rằng Chakra’s CollectGarbage() vẫn có thể gọi được nhưng chức năng của nó đã bị tắt trong Edge [15], do đó, cần một cơ chế khác để kích hoạt garbage collection.
+
+Nhìn lại chức năng của ArrayBuffer, mỗi khi ArrayBuffer được tạo, kích thước được truyền cho hàm tạo ArrayBuffer sẽ được thêm vào bộ đếm trình quản lý heap internal Chakra. Nếu bộ đếm cụ thể đó đạt đến >= 192MB ở các máy có bộ nhớ > 1GB (ngưỡng thấp hơn đối với các máy có bộ nhớ thấp hơn), quá trình garbage collection sẽ được kích hoạt đồng thời.
+
+Do đó, để thực hiện garbage collection, một ArrayBuffer có kích thước 192MB được tạo, sau đó tạo một delay để chờ quá trình garbage collection diễn ra đồng thời kết thúc và sau đó, một mã JavaScript tiếp theo được thực thi:
+``` c 
+// trigger concurrent garbage collection
+gcTrigger = new ArrayBuffer(192 * 1024 * 1024;
+// then call afterGcCallback after some delay (adjust if needed)
+setTimeout(afterGcCallback, 1000);
+```
+
+### 4.4. PREVENTING TARGET ADDRESS CORRUPTION
+
+
 
 ![](pic/pic44.PNG)
 
