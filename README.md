@@ -80,8 +80,6 @@ Trong phần trình bày này, tôi sẽ thảo luận về cấu trúc dữ li�
     * !heap -x <address>
     * !heap -i <address> -h <heap>
     * !heap -s -a -h <heap>
-  
-## 21. Overview
 
 ## 1. INTRODUCTION
 Với sự ra đời của Windows 10, Segment Heap, một triển khai native heap mới cũng được giới thiệu. Nó hiện là triển khai native heap được sử dụng trong các ứng dụng Windows (trước đây được gọi là Modern/Metro apps) và trong các tiến trình hệ thống nhất định, các ứng dụng truyền thống thì mặc định vẫn triển khai native heap cũ hơn (NT Heap).
