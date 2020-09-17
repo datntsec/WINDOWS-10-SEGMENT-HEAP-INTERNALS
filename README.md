@@ -80,7 +80,6 @@ Trong phần trình bày này, tôi sẽ thảo luận về cấu trúc dữ li�
     * !heap -x <address>
     * !heap -i <address> -h <heap>
     * !heap -s -a -h <heap>
-7. Bibliography
   
 ## 1. INTRODUCTION
 Với sự ra đời của Windows 10, Segment Heap, một triển khai native heap mới cũng được giới thiệu. Nó hiện là triển khai native heap được sử dụng trong các ứng dụng Windows (trước đây được gọi là Modern/Metro apps) và trong các tiến trình hệ thống nhất định, các ứng dụng truyền thống thì mặc định vẫn triển khai native heap cũ hơn (NT Heap).
@@ -943,27 +942,159 @@ Nhìn lại chức năng của ArrayBuffer, mỗi khi ArrayBuffer được tạo
 Do đó, để thực hiện garbage collection, một ArrayBuffer có kích thước 192MB được tạo, sau đó tạo một delay để chờ quá trình garbage collection diễn ra đồng thời kết thúc và sau đó, một mã JavaScript tiếp theo được thực thi:
 ``` c 
 // trigger concurrent garbage collection
-gcTrigger = new ArrayBuffer(192 * 1024 * 1024;
+gcTrigger = new ArrayBuffer(192 * 1024 * 1024);
 // then call afterGcCallback after some delay (adjust if needed)
 setTimeout(afterGcCallback, 1000);
 ```
 
 ### 4.4. PREVENTING TARGET ADDRESS CORRUPTION
-
-
+Vì phân bổ VS được thực hiện bằng chính sách phù hợp nhất, ý tưởng đầu tiên xuất hiện trong đầu là phân bổ VS controlled buffer bằng cách sử dụng kích thước 0x330. Tuy nhiên, ý tưởng đầu tiên này có vấn đề ở chỗ highest 16 bits của địa chỉ target sẽ bị ghi đè bằng giá trị unused bytes được lưu trữ trong hai byte cuối cùng của VS block:
 
 ![](pic/pic44.PNG)
 
+Để giải quyết vấn đề này, một thuộc tính của VS chunk splitting có thể được tận dụng. Cụ thể, như đã đề cập trước đây trong phần “VS Allocation” ở 2.3, các large free block được tách ra ngoại trừ khi block size của block còn lại sẽ nhỏ hơn 0x20 byte.
+
+Do đó, nếu một controlled buffer 0x340 byte (tổng block size bao gồm cả header là 0x350) được sử dụng và ngăn xếp toán hạng PostScript 0x328 byte (tổng block size bao gồm cả header là 0x340) sẽ được phân bổ trong free VS block của controlled buffer được giải phóng, thì kích thước của block còn lại sau khi tách sẽ chỉ còn 0x10 byte, do đó ngăn chặn việc chia free VS block 0x350 byte. Và nếu đúng như vậy, giá trị unused bytes sẽ được lưu trữ tại offset 0x33E của VS block, từ đó địa chỉ target sẽ không bị sửa đổi:
+
 ![](pic/pic45.PNG)
+
+### 4.5. PREVENTING FREE BLOCKS COALESCING
+Để ngăn free VS block của controlled buffer được giải phóng hợp nhất với các free VS blocks lân cận, 15 (thay vì một) controlled buffers được tạo tuần tự, sau đó, theo cách xen kẽ, tám bộ đệm được giữ (busy) và bảy bộ đệm được free.
+
+Hình minh họa bên dưới cho thấy một mô hình phân bổ thuận lợi ngăn không cho các free VS blocks của controlled buffers được giải phóng được liên kết với nhau:
 
 ![](pic/pic46.PNG)
 
+Các mẫu phân bổ thực tế không phải lúc nào cũng khớp chính xác với hình minh họa ở trên, chẳng hạn như khi một số controlled buffer được cấp phát từ một  VS subsegment khác. Tuy nhiên, nhiều buffer được giải phóng và busy controlled buffer làm tăng khả năng ít nhất một hoặc nhiều free VS blocks của controlled buffers được giải phóng sẽ không được hợp nhất với nhau.
+
+### 4.6. PREVENTING UNINTENDED USE OF FREE BLOCKS
+Sau khi các controlled buffers được giải phóng ở bước 2, các free VS block tương ứng của chúng có thể được tách ra và sử dụng cho các phân bổ nhỏ có thể xảy ra trước bước 3. Để ngăn việc sử dụng ngoài ý muốn các free VS block này, các LFH bucket tương ứng cho các kích thước phân bổ từ 0x1 đến 0x320 được kích hoạt để phân bổ cho các kích thước đó sẽ được LFH thực hiện thay vì VS allocation component:
+
 ![](pic/pic47.PNG)
+
+### 4.7. ADJUSTED PLAN FOR IMPLANTING THE TARGET ADDRESS
+Bây giờ các giải pháp cho các vấn đề đã được xác định, kế hoạch ban đầu để cấy ghép địa chỉ target được điều chỉnh như sau:
+   1. HTML/JavaScript: Tạo 15 controlled buffers bằng cách khởi tạo các đối tượng ArrayBuffer với kích thước là 0x340. 
+   2. HTML/JavaScript: Kích hoạt LFH bucket tương ứng với kích thước phân bổ từ 0x1 đến 0x320.
+   3. HTML/JavaScript: Theo cách xen kẽ, giải phóng bảy controlled buffers và để lại tám controlled buffers (busy).
+   4. HTML/JavaScript: Chèn phần tử <embed> vào trang để WinRT PDF tải tệp PDF gây ra lỗ hổng bảo mật. 
+   5. PDF: WinRT PDF sẽ phân bổ ngăn xếp toán hạng PostScript và block được trả về bởi trình quản lý heap sẽ là free VS block của một trong controlled buffers được giải phóng.
 
 ![](pic/pic48.PNG)
 
+### 4.8. SUCCESSFUL ARBITRARY WRITE
+Khi địa chỉ đích được cấy ghép thành công vào sau phần kết thúc của ngăn xếp toán hạng PostScript và lỗ hổng được kích hoạt, việc ghi tùy ý sẽ đạt được:
+
 ![](pic/pic49.PNG)
 
-![](pic/pic5.PNG)
+### 4.9. ANALYSIS AND SUMMARY: CASE STUDY
+Case study này cho thấy rằng thao tác bố cục chính xác có thể đạt được trong các heap do Segment Heap quản lý. Cụ thể, nó cho thấy cách bố trí của VS allocations có thể được kiểm soát và cách LFH có thể được sử dụng để duy trì bố cục được kiểm soát của VS allocations bằng cách chuyển hướng các yêu cầu phân bổ không mong muốn đến các LFH bucket đã được kích hoạt.
+
+Hai yếu tố chính cho phép thao tác chính xác bố cục heap trong case study này là khả năng viết tập lệnh được cung cấp bởi công cụ Chakra JavaScript và một heap chung được sử dụng bởi ArrayBuffer cả của Chakra’s và trình thông dịch PostScript của WinRT PDF. Nếu không có hai yếu tố này, thao tác bố cục chính xác của MSVCRT heap bằng cách sử dụng internal allocation và freeing của WinRT PDF của các đối tượng có thể sẽ khó khăn hơn.
+
+Cuối cùng, khi phát triển proof-of-concepts, người ta có thể gặp phải những vấn đề dường như không thể giải quyết được, chẳng hạn như corruption trong địa chỉ target được mô tả trong case study này. Trong những trường hợp như vậy, việc hiểu rõ internals của việc triển khai heap đôi khi sẽ cung cấp giải pháp.
+
+## 5. CONCLUSION
+Internals của Segment Heap và NT Heap phần lớn là khác nhau. Mặc dù một số thành phần của Segment Heap và NT Heap có cùng mục đích, nhưng cấu trúc dữ liệu support của Segment Heap chủ yếu không giống như trong NT Heap. Do đó, các cấu trúc dữ liệu Segment Heap mới này rất thú vị cho việc nghiên cứu tấn công metadata.
+
+Ngoài ra, các cơ chế bảo mật trong bản phát hành ban đầu của Segment Heap trong Windows 10 cho thấy rằng các cuộc tấn công trước đó và các biện pháp giảm nhẹ các lỗ hỏng tương ứng của chúng trong NT Heap đã được xem xét khi phát triển Segment Heap.
+
+Về thao tác bố cục heap, case study này cho thấy rằng, với khả năng thực hiện phân bổ và giải phóng tùy ý, có thể đạt được thao tác bố cục chính xác đối với các heap được quản lý bởi Segment Heap. Case study này cũng chỉ ra rằng kiến thức chuyên sâu về Segment Heap có thể giúp giải quyết các vấn đề về độ reliability/functionality của proofof-concept có vẻ không thể giải quyết được.
+
+Cuối cùng, tôi hy vọng rằng bài báo này đã giúp bạn hiểu được Segment Heap của Windows 10.
+
+## 6. APPENDIX: WINDBG !HEAP EXTENSION COMMANDS FOR SEGMENT HEAP
+Dưới đây là một số lệnh mở rộng WinDbg !heap hữu ích cho việc làm việc với Segment Heap.
+
+**!heap -x \<address\>**
+
+Lệnh này hữu ích nếu heap nơi block được cấp phát không xác định vì lệnh này chỉ yêu cầu địa chỉ của block. Lệnh này sẽ hiển thị “first” page range descriptor, type và total size của block đó của heap, segment, subsegment, subsegment tương ứng.
+
+Example output cho busy VS block (kích thước do người dùng yêu cầu là 0x328 byte):
+``` windbg
+windbg> !heap -x 00000203`6b2b6200
+
+[100 Percent Complete]
+[33 Percent Complete]
+Search was performed for the following Address: 0x000002036b2b6200
+Below is a detailed information about this address.
+Heap Address 		: 0x000002036b140000
+The address was found in backend heap.
+Segment Address 	: 0x000002036b200000
+Page range index (0-255): 120
+Page descriptor address : 0x000002036b200f00
+Subsegment address 	: 0x000002036b278000
+Subsegment Size 	: 266240 Bytes
+Allocation status 	: Variable size allocated chunk.
+Chunk header address 	: 000002036b2b61f0
+Chunk size (bytes) 	: 848
+Chunk unused bytes 	: 24
+```
+
+**!heap -i \<address> -h \<heap>**
+
+Sau khi biết heap tương ứng của block, lệnh này có thể được sử dụng để hiển thị thông tin bổ sung về block đó, chẳng hạn như kích thước do người dùng yêu cầu và trường RangeFlags được giải mã của “first” page range descriptor của subsegment tương ứng
+
+Example output cho busy VS block (kích thước do người dùng yêu cầu là 0x328 byte, cùng một block với ví dụ trước):
+```
+windbg> !heap -i 00000203`6b2b6200 -h 000002036b140000
+
+The address 000002036b2b6200 is in Segment 000002036b200000
+Page range descriptor address: 	000002036b200f00
+Page range start address: 	000002036b278000
+Range flags (2e): First Allocated Committed VS
+
+UserAddress: 			0x000002036b2b6200
+Block is : 			Busy
+Total Block Size (Bytes): 	0x350
+User Size (bytes): 		0x328
+UnusedBytes (bytes): 		0x18
+```
+
+**!heap -s -a -h \<heap>**
+Lệnh !heap -s với tùy chọn -a (dump all heap blocks option) có thể được sử dụng để kiểm tra bố cục của một heap vì nó hiển thị thông tin về từng block cho mỗi Segment Heap component theo trình tự
+
+Example output: 
+```
+windbg> !heap -s -a -h 000002036b140000
+
+Large Allocation X-RAY.
+
+  Block Address   Metadata Address   Virtual Address       Pages   Ununsed Size
+						       Allocated	(Bytes)
+    20c7fc020c0        20c7fc020c0       20300df0000         227           2383
+    20c7fc02080        20c7fc02080       20300ee0000         137           1912
+
+Backend Heap X-RAY.
+ 	       Page Range   Page Range
+    Segment    Descriptor   Descriptor 	   Subsegment   Range 	    Subsegment	     Pages     Unused
+    Address       Address        Index        Address   Flags 		  Type   Allocated      Bytes
+
+2036b200000   2036b200040 	     2    2036b202000 	   2e 	Variable Alloc 	   	17       4096
+2036b200000   2036b200260 	    19    2036b213000 	   2e 	Variable Alloc 	   	65 	 4096
+2036b200000   2036b200a80 	    84    2036b254000 	    f 	LFH Subsegment 	    	1           0
+
+[...]
+
+Variable size allocation X-RAY
+ 	Segment      Subsegment    Chunk Header    Chunk    Bucket 	Status 	Unused
+ 	Address 	Address		Address	    Size     Index 		 Bytes
+    2036b200000     2036b202000     2036b202030      752  	47   Allocated 	     8
+    2036b200000     2036b202000     2036b202320     1808 	77   Allocated       0
+    2036b200000     2036b202000     2036b202a30      272 	17   Allocated       0
+
+[...]
+
+LFH X-RAY
+
+    Segment 	Subsegment 	    Block    Block    Bucket 	   Commit     Busy     Free    Unused
+    Address 	   Address 	  Address     Size     Index 	   Status    Bytes    Bytes 	Bytes
+2036b200000    2036b254000    2036b254040      256 	  16    Committed      256 	  0 	    0
+2036b200000    2036b254000    2036b254140      256 	  16    Committed      256 	  0 	    0
+2036b200000    2036b254000    2036b254240      256 	  16    Committed      256 	  0 	    0
+
+[...]
+```
+
 
 
