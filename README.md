@@ -1,5 +1,8 @@
 WINDOWS 10 SEGMENT HEAP INTERNALS
 -
+Được dịch từ bài báo: [WINDOWS 10 SEGMENT HEAP INTERNALS](https://www.blackhat.com/docs/us-16/materials/us-16-Yason-Windows-10-Segment-Heap-Internals-wp.pdf)
+
+Mark Vincent Yason - IBM X-Force Advanced Research - yasonm[at]ph[dot]ibm[dot]com - @MarkYason
 
 # ABSTRACT
 Được ra mắt trong Windows 10, Segment Heap triển khai native heap được sử dụng trong các ứng dụng Windows (trước đây được gọi là Modern/Metro apps) và các tiến trình hệ thống nhất định. Việc triển khai heap mới này là một sự bổ sung được nghiên cứu kỹ lưỡng và được tài liệu hóa rộng rãi để NT Heap vẫn được sử dụng trong các ứng dụng truyền thống và trong các loại phân bổ nhất định trong các ứng dụng Windows.
@@ -1096,5 +1099,8 @@ LFH X-RAY
 [...]
 ```
 
+<p align="right">
+  <b><i>DatntSec. Viettel Cyber Security.<i><b>
+</p>
 
 
