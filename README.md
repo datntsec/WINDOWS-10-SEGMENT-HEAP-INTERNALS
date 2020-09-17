@@ -5,11 +5,11 @@ WINDOWS 10 SEGMENT HEAP INTERNALS
 Mark Vincent Yason - IBM X-Force Advanced Research - yasonm[at]ph[dot]ibm[dot]com - @MarkYason
 
 # ABSTRACT
-Được ra mắt trong Windows 10, Segment Heap triển khai native heap được sử dụng trong các ứng dụng Windows (trước đây được gọi là Modern/Metro apps) và các tiến trình hệ thống nhất định. Việc triển khai heap mới này là một sự bổ sung được nghiên cứu kỹ lưỡng và được tài liệu hóa rộng rãi để NT Heap vẫn được sử dụng trong các ứng dụng truyền thống và trong các loại phân bổ nhất định trong các ứng dụng Windows.
+Được ra mắt trong Windows 10, Segment Heap thực hiện triển khai native heap được sử dụng trong các ứng dụng Windows (trước đây được gọi là Modern/Metro apps) và một số tiến trình hệ thống nhất định. Cách triển khai heap mới này là một sự bổ sung được nghiên cứu kỹ lưỡng và mở rộng từ NT Heap để nó có thể sử dụng trong các ứng dụng truyền thống và trong các hình thức phân bổ nhất định trong các ứng dụng Windows.
 
-Một khía cạnh quan trọng của Segment Heap là nó được thiết lập cho Microsoft Edge, có nghĩa là các components/dependencies chạy trong Edge không sử dụng trình quản lý heap tùy chỉnh mà sẽ sử dụng Segment Heap. Do đó, việc khai thác các lỗ hổng memory corruption đáng tin cậy trong các components/dependencies Edge này sẽ yêu cầu một số mức độ hiểu biết về Segment Heap.
+Một khía cạnh quan trọng của Segment Heap là nó được thiết lập cho Microsoft Edge, có nghĩa là các components/dependencies chạy trong Edge không sử dụng trình quản lý heap tùy chỉnh mà sẽ sử dụng Segment Heap. Do đó, việc khai thác các lỗ hổng memory corruption reliably trong các components/dependencies Edge này sẽ yêu cầu một số mức độ hiểu biết về Segment Heap.
 
-Trong phần trình bày này, tôi sẽ thảo luận về cấu trúc dữ liệu, thuật toán và cơ chế bảo mật của Segment Heap. Kiến thức về Segment Heap cũng được áp dụng bằng cách thảo luận và chứng minh cách lỗ hổng memory corruption trong thư viện Microsoft WinRT PDF (CVE-2016-0117) được tận dụng để ghi tùy ý trong phần sau của nội dung tiến trình Edge.
+Trong phần trình bày này, tác giả sẽ thảo luận về cấu trúc dữ liệu, thuật toán và cơ chế bảo mật của Segment Heap. Kiến thức về Segment Heap cũng được áp dụng bằng cách thảo luận và chứng minh cách lỗ hổng memory corruption trong thư viện Microsoft WinRT PDF (CVE-2016-0117) được tận dụng để ghi tùy ý trong phần sau của nội dung tiến trình Edge.
 
 # CONTENTS
 1. [Introduction](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#1-introduction).
@@ -85,25 +85,25 @@ Trong phần trình bày này, tôi sẽ thảo luận về cấu trúc dữ li�
     * !heap -s -a -h <heap>
 
 ## 1. INTRODUCTION
-Với sự ra đời của Windows 10, Segment Heap, một triển khai native heap mới cũng được giới thiệu. Nó hiện là triển khai native heap được sử dụng trong các ứng dụng Windows (trước đây được gọi là Modern/Metro apps) và trong các tiến trình hệ thống nhất định, các ứng dụng truyền thống thì mặc định vẫn triển khai native heap cũ hơn (NT Heap).
+Với sự ra đời của Windows 10, Segment Heap, một cách triển khai native heap mới cũng được giới thiệu. Nó hiện là triển khai native heap được sử dụng trong các ứng dụng Windows (trước đây được gọi là Modern/Metro apps) và trong một số tiến trình hệ thống nhất định, các ứng dụng truyền thống thì mặc định vẫn triển khai native heap cũ hơn (NT Heap).
 
-Từ quan điểm của nhà nghiên cứu bảo mật, việc hiểu rõ internals của Segment Heap là rất quan trọng vì những kẻ tấn công có thể tận dụng hoặc khai thác các thành phần mới và quan trọng này trong tương lai gần, đặc biệt là vì nó đang được sử dụng bởi trình duyệt Edge. Ngoài ra, một nhà nghiên cứu bảo mật thực hiện kiểm tra phần mềm có thể cần phải phát triển một proof of concept (POC - bằng chứng về khái niệm) cho một lỗ hổng để chứng minh khả năng khai thác vendor/developer. Nếu việc tạo bằng chứng của khái niệm (POC) yêu cầu thao tác chính xác đối với một heap được quản lý bởi Segment Heap, thì sự hiểu biết về internals của nó chắc chắn sẽ hữu ích. Bài viết này nhằm giúp người đọc hiểu sâu sắc về Segment Heap.
+Từ quan điểm của nhà nghiên cứu bảo mật, việc hiểu rõ internals của Segment Heap là rất quan trọng vì những kẻ tấn công có thể tận dụng hoặc khai thác các component mới và quan trọng này trong tương lai gần, đặc biệt là khi nó đang được sử dụng bởi trình duyệt Edge. Ngoài ra, một nhà nghiên cứu bảo mật thực hiện kiểm tra phần mềm có thể cần phải phát triển một proof of concept (POC - bằng chứng về khái niệm) cho một lỗ hổng để chứng minh khả năng khai thác vendor/developer. Nếu việc tạo POC yêu cầu thao tác chính xác đối với một heap được quản lý bởi Segment Heap, thì sự hiểu biết về internals của nó chắc chắn sẽ hữu ích. Bài viết này nhằm giúp người đọc hiểu sâu sắc về Segment Heap.
 
-Bài viết được chia làm ba phần chính. Phần thứ nhất (Internals) sẽ bàn luận sâu về các component (thành phần) khác nhau của Segment Heap. Nó bao gồm các cấu trúc dữ liệu và thuật toán được sử dụng bởi mỗi Segment Heap component khi thực hiện các chức năng của chúng. Phần thứ hai (Security Mechanisms) sẽ bàn luận về các cơ chế khác nhau khiến việc tấn công Segment Heap metadata quan trọng trở nên khó khăn hoặc không thể tin cậy và trong một số trường hợp nhất định, gây khó khăn cho việc thực hiện thao tác bố trí heap chính xác. Phần thứ ba (Case Study) là nơi áp dụng sự hiểu biết về Segment Heap bằng cách thảo luận về các phương pháp để điều khiển việc bố trí heap được quản lý bởi Segment để tận dụng lỗ hổng ghi tùy ý.
+Bài viết được chia làm ba phần chính. Phần thứ nhất (Internals) sẽ bàn luận sâu về các component (thành phần) khác nhau của Segment Heap. Nó bao gồm các cấu trúc dữ liệu và thuật toán được sử dụng bởi mỗi Segment Heap component khi thực hiện các chức năng của chúng. Phần thứ hai (Security Mechanisms) sẽ bàn luận về các cơ chế khác nhau khiến việc tấn công Segment Heap metadata quan trọng trở nên khó khăn hoặc unreliable (có thể hiểu là không thể dùng được nữa) và trong một số trường hợp nhất định, gây khó khăn cho việc thực hiện thao tác bố trí heap chính xác. Phần thứ ba (Case Study) là nơi áp dụng sự hiểu biết về Segment Heap bằng cách thảo luận về các phương pháp để điều khiển việc bố trí heap được quản lý bởi Segment để tận dụng lỗ hổng ghi tùy ý.
 
-Vì Segment Heap và NT Heap chia sẻ các khái niệm tương tự nhau, người đọc được khuyến khích đọc các tác phẩm trước đây thảo luận về Internals của NT Heap [1, 2, 3, 4, 5]. Các công trình trước đây và các bài báo/bài thuyết trình khác nhau mà họ tham khảo cũng thảo luận về các cơ chế bảo mật và kỹ thuật tấn công cho NT Heap sẽ cung cấp cho người đọc ý tưởng tại sao các cơ chế bảo mật heap nhất định lại được sử dụng trong Segment Heap
+Vì Segment Heap và NT Heap chia sẻ các khái niệm tương tự nhau, người đọc được khuyến khích đọc các tác phẩm đã thảo luận trước đây về Internals của NT Heap [[1](https://www.blackhat.com/presentations/bh-usa-09/MCDONALD/BHUSA09-McDonald-WindowsHeap-PAPER.pdf), [2](https://www.insomniasec.com/downloads/publications/Heaps_About_Heaps.ppt), [3](https://www.blackhat.com/presentations/bh-usa-08/Hawkes/BH_US_08_Hawkes_Attacking_Vista_Heap.pdf), [4](http://illmatics.com/Understanding_the_LFH.pdf), [5](http://illmatics.com/Windows%208%20Heap%20Internals.pdf)]. Các công trình trước đây và các bài báo/bài thuyết trình khác nhau mà họ tham khảo cũng thảo luận về các cơ chế bảo mật và kỹ thuật tấn công cho NT Heap sẽ cung cấp cho người đọc hiểu được ý tưởng tại sao các cơ chế bảo mật heap nhất định lại được sử dụng trong Segment Heap
 
-Tất cả các thông tin trong bài viết này dưa trên NTDLL.DLL (64-bit) phiên bản 10.0.14295.1000 từ Windows 10 Redstone 1 Preview (Build 14295).
+Tất cả các thông tin trong bài viết này dựa trên NTDLL.DLL (64-bit) phiên bản 10.0.14295.1000 từ Windows 10 Redstone 1 Preview (Build 14295).
 
 ## 2. INTERNALS
-Trong phần này, sẽ bàn sâu về internals của Segment Heap. Đầu tiên sẽ là tổng quan về các thành phần khác nhau của Segment Heap và sau đó mô tả các trường hợp khi Segment Heap được kích hoạt. Sau phần tổng quan, mỗi thành phần Segment Heap sẽ được thảo luận chi tiết trong phần phụ của riêng chúng.
+Trong phần này, sẽ bàn sâu về internals của Segment Heap. Đầu tiên sẽ là tổng quan về các component khác nhau của Segment Heap và sau đó mô tả các trường hợp khi Segment Heap được kích hoạt. Sau phần tổng quan, mỗi component Segment Heap sẽ được thảo luận chi tiết trong phần phụ của nó.4
 
 Lưu ý rằng. internal NTDLL functions được bàn luận ở đây có thể được nêu trong một số bản dựng NTDLL. Do đó, các internal functions có thể không được nhìn thấy trong danh sách các functions trong IDA và bản sao của các function có thể được nhúng/gắn vào trong các functions khác.
 
 ### 2.1. OVERVIEW
 **Architecture**
 
-Segment Heap bao gồm bốn components (thành phần): (1) Backend, phân bổ các heap block có kích thước > 128KB và <= 508KB. Nó sử dụng các virtual memory functions do NT Memory Manager cung cấp để tạo và quản lý các segment ở nơi các backend block được cấp phát từ đó. (2) Thành phần phân bổ variable size (VS) cho các yêu cầu cấp phát kích thước <= 128KB. Nó sử dụng backend để tạo các VS subsegments ở nơi các VS block được cấp phát từ đó. (3) Low Fragmentation Heap (LFH) cho các yêu cầu cấp phát có kích thước <= 16.368 byte nhưng chỉ khi kích thước phân bổ được phát hiện là thường được sử dụng trong việc cấp phát. Nó sử dụng backend để tạo các phân đoạn LFH subsegments nơi các LFH block được cấp phát từ dó. (4) Sử dụng để phân bổ các block > 508KB. Nó sử dụng các virtual memory functions do NT Memory Manager cung cấp để cấp phát và giải phóng các block lớn.
+Segment Heap bao gồm bốn components (thành phần): (1) Backend, phân bổ các heap block có kích thước > 128KB và <= 508KB. Nó sử dụng các virtual memory functions do NT Memory Manager cung cấp để tạo và quản lý các segment tại nơi các backend block được cấp phát từ đó. (2) Thành phần phân bổ variable size (VS) cho các yêu cầu cấp phát có kích thước <= 128KB. Nó sử dụng backend để tạo các VS subsegments tại nơi các VS block được cấp phát từ đó. (3) Low Fragmentation Heap (LFH) được sử dụng cho các yêu cầu cấp phát có kích thước <= 16.368 byte nhưng chỉ khi kích thước phân bổ đó được thực hiện thường xuyên trong việc cấp phát. Nó sử dụng backend để tạo các LFH subsegment nơi các LFH block được cấp phát từ dó. (4) Sử dụng để phân bổ các block > 508KB. Nó sử dụng các virtual memory functions do NT Memory Manager cung cấp để cấp phát và giải phóng các block lớn.
 
 ![](pic/pic1.PNG)
 
@@ -117,7 +117,7 @@ Segment Heap hiện là một tính năng opt-in. Các ứng dụng Windows đư
 - smss.exe
 - svchost.exe
 
-Để bật hoặc tắt Segment Heap cho một tệp thực thi cụ thể, có thể Image File Execution Options (IFEO) thiết lập registry entry như sau:
+Để bật hoặc tắt Segment Heap cho một tệp thực thi cụ thể, có thể thiết lập  Image File Execution Options (IFEO) registry entry như sau:
 ``` 
 HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\
 Image File Execution Options\(executable)
@@ -134,19 +134,19 @@ Enabled = (DWORD)
 (Not 0): Enable Segment Heap
 ```
 
-Nếu sau tất cả các lần kiểm tra, nó được xác định rằng một quá trình sẽ sử dụng Segment Heap, bit 0 của biến toàn cục RtlpHpHeapFeatures sẽ được đặt.
+Sau tất cả các lần kiểm tra, nếu nó xác định rằng một tiến trình sẽ sử dụng Segment Heap, bit 0 của biến toàn cục RtlpHpHeapFeatures sẽ được set.
 
 Lưu ý rằng ngay cả khi Segment Heap được bật trong một tiến trình, không phải tất cả các heap được tạo bởi tiến trình đó sẽ được quản lý bởi Segment Heap vì có những loại heap đặc biệt vẫn cần được quản lý bởi NT Heap (điều này sẽ được thảo luận trong mục con tiếp theo).
 
 **Heap Creation**
 
-Nếu Segment Heap được thiết lập (bit 0 của RtlpHpHeapFeatures được set), heap được tạo bởi [HeapCreate()](https://docs.microsoft.com/en-us/windows/win32/api/heapapi/nf-heapapi-heapcreate) sẽ được quản lý bởi Segment Heap ngoại trừ đối số dwMaximumSize được truyền vào nó không phải là 0 (heap không thể phát triển kích thước)
+Nếu Segment Heap được thiết lập (bit 0 của RtlpHpHeapFeatures được set), heap được tạo bởi [HeapCreate()](https://docs.microsoft.com/en-us/windows/win32/api/heapapi/nf-heapapi-heapcreate) sẽ được quản lý bởi Segment Heap ngoại trừ khi đối số dwMaximumSize được truyền vào nó không phải là 0 (heap không thể phát triển kích thước)
 
-Nếu [RtlCreateHeap()](https://docs.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-rtlcreateheap) API được sử dụng trực tiếp để tạo heap, tất cả các điều sau đây phải đúng đối với Segment Heap để quản lý heap được tạo:
-   - Heap phải có thể phát triển: Đối số Flags được truyền vào hàm RtlCreateHeap() phải là HEAP_GROWABLE.
-   - Bộ nhớ heap không nên được cấp phát trước (đề xuất một heap được chia sẻ): Đối số HeapBase được truyền đến RtlCreateHeap() phải là NULL.
-   - Nếu đối số Parameters được truyền đến RtlCreateHeap(), các trường Parameters sau đây phải được đặt thành 0/NULL: SegmentReserve, SegmentCommit, VirtualMemoryThreshold and CommitRoutine.
-   - Đối số Lock được truyền vào hàm RtlCreateHeap() phải là NULL.
+Nếu sử dụng trực tiếp [RtlCreateHeap()](https://docs.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-rtlcreateheap) API để tạo heap, tất cả các điều sau đây phải đúng để Segment Heap quản lý heap được tạo:
+   - Heap phải có thể phát triển: Tham số Flags được truyền vào hàm RtlCreateHeap() phải là HEAP_GROWABLE.
+   - Bộ nhớ heap không nên được cấp phát trước (đề xuất một heap được chia sẻ): Tham số HeapBase được truyền đến RtlCreateHeap() phải là NULL.
+   - Nếu tham số Parameters được truyền đến RtlCreateHeap(), các trường Parameters sau đây phải được đặt thành 0/NULL: SegmentReserve, SegmentCommit, VirtualMemoryThreshold and CommitRoutine.
+   - Tham số Lock được truyền vào hàm RtlCreateHeap() phải là NULL.
    
 Hình minh họa sau đây sẽ cho thấy heap được tạo khi nội dung tiến trình Edge (một app của Windows) được load lần đầu:
 
@@ -158,54 +158,53 @@ Bốn trên năm heap được quản lý bởi Segment Heap. Heap đầu tiên 
 
 Khi một heap được quản lý bởi Segment Heap được tạo, address/handle heap (gọi chung là HeapBase) được trả về bởi HeapCreate() hoặc RtlCreateHeap() sẽ trỏ đến một cấu trúc _SEGMENT_HEAP (bản sao cấu trúc _HEAP của NT Heap).
 
-HeapBase là vị trí trung tâm, lưu trữ trạng thái của các components Segment Heap khác nhau, nó có các trường sau:
+HeapBase là vị trí trung tâm, lưu trữ trạng thái của các component Segment Heap khác nhau, nó có các trường sau:
 ```
 windbg> dt ntdll!_SEGMENT_HEAP
    +0x000 TotalReservedPages : Uint8B
    +0x008 TotalCommittedPages : Uint8B
-   +0x010 Signature : Uint4B
-   +0x014 GlobalFlags : Uint4B
+   +0x010 Signature 	     : Uint4B
+   +0x014 GlobalFlags        : Uint4B
    +0x018 FreeCommittedPages : Uint8B
-   +0x020 Interceptor : Uint4B
+   +0x020 Interceptor        : Uint4B
    +0x024 ProcessHeapListIndex : Uint2B
-   +0x026 GlobalLockCount : Uint2B
-   +0x028 GlobalLockOwner : Uint4B
-   +0x030 LargeMetadataLock : _RTL_SRWLOCK
+   +0x026 GlobalLockCount    : Uint2B
+   +0x028 GlobalLockOwner    : Uint4B
+   +0x030 LargeMetadataLock  : _RTL_SRWLOCK
    +0x038 LargeAllocMetadata : _RTL_RB_TREE
    +0x048 LargeReservedPages : Uint8B
    +0x050 LargeCommittedPages : Uint8B
    +0x058 SegmentAllocatorLock : _RTL_SRWLOCK
-   +0x060 SegmentListHead : _LIST_ENTRY
-   +0x070 SegmentCount : Uint8B
-   +0x078 FreePageRanges : _RTL_RB_TREE
-   +0x088 StackTraceInitVar : _RTL_RUN_ONCE
-   +0x090 ContextExtendLock : _RTL_SRWLOCK
-   +0x098 AllocatedBase : Ptr64 UChar
-   +0x0a0 UncommittedBase : Ptr64 UChar
-   +0x0a8 ReservedLimit : Ptr64 UChar
-   +0x0b0 VsContext : _HEAP_VS_CONTEXT
-   +0x120 LfhContext : _HEAP_LFH_CONTEXT
+   +0x060 SegmentListHead    : _LIST_ENTRY
+   +0x070 SegmentCount       : Uint8B
+   +0x078 FreePageRanges     : _RTL_RB_TREE
+   +0x088 StackTraceInitVar  : _RTL_RUN_ONCE
+   +0x090 ContextExtendLock  : _RTL_SRWLOCK
+   +0x098 AllocatedBase      : Ptr64 UChar
+   +0x0a0 UncommittedBase    : Ptr64 UChar
+   +0x0a8 ReservedLimit      : Ptr64 UChar
+   +0x0b0 VsContext 	     : _HEAP_VS_CONTEXT
+   +0x120 LfhContext 	     : _HEAP_LFH_CONTEXT
  ```
- 
    - Signature - 0xDDEEDDEE (Heap được tạo bởi Segment Heap)
    
-Các trường để theo dõi trạng thái phân bổ block lớn (ở phần 2.5 ta sẽ nói thêm):
+Các trường để theo dõi trạng thái phân bổ block lớn (ở phần [2.5](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#25-large-block-allocation) ta sẽ nói thêm):
    - LargeAllocMetadata - Red-black tree (RB tree) của large blocks metadata.
-   - LargeReservedPages - Số trang được dành riêng cho tất cả large blocks allocation.
-   - LargeCommittedPages - Số trang được commit cho tất cả large blocks allocation.
+   - LargeReservedPages - Số page được dành riêng cho tất cả large blocks allocation.
+   - LargeCommittedPages - Số page được commit cho tất cả large blocks allocation.
 
-Các trường để theo dõi trạng thái phân bộ backend (ở phần 2.2 ta sẽ nói thêm):
-   - SegmentCount - Số lượng segment thuộc sở hữu bởi heap.
-   - SegmentListHead - Danh sách liên kết của các segment thuộc sở hưu của heap.
+Các trường để theo dõi trạng thái phân bổ backend (ở phần [2.2](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#22-backend-allocation) ta sẽ nói thêm):
+   - SegmentCount - Số lượng segment thuộc sở hữu của heap.
+   - SegmentListHead - Danh sách liên kết của các segment thuộc sở hữu của heap.
    - FreePageRanges - RB tree của free backend blocks.
    
-Cấu trúc con sau theo dõi trạng thái của sự thay đổi kích thước phần bổ và trạng thái của Low Fragmentation Heap:
-   - VsContext - Theo dõi trạng thái của sự thay đổi kích thước phần bổ (xem thêm ở phần 2.3).
-   - LfhContext - Theo dõi trạng thái của Low Fragmentation Heap (xem thêm ở phần 2.4).
+Cấu trúc con sau theo dõi trạng thái của phân bổ variable size và trạng thái của Low Fragmentation Heap:
+   - VsContext - Theo dõi trạng thái của sự phân bổ variable size (xem thêm ở phần [2.3](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#23-variable-size-allocation).
+   - LfhContext - Theo dõi trạng thái của Low Fragmentation Heap (xem thêm ở phần [2.4](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#24-low-fragmentation-heap)).
    
-Heap được cấp phát và khởi tạo thông qua lệnh gọi hàm RtlpHpSegHeapCreate(). NtAllocateVirtualMemory () được sử dụng để reverse và commit bộ nhớ ảo cho heap. Kích thước reverse thay đổi tùy thuộc vào số lượng bộ xử lý và kích thước commit là kích thước của cấu trúc _SEGMENT_HEAP.
+Heap được cấp phát và khởi tạo thông qua lệnh gọi hàm RtlpHpSegHeapCreate(). NtAllocateVirtualMemory() được sử dụng để reverse và commit virtual memory cho heap. Kích thước reverse thay đổi tùy thuộc vào số lượng bộ xử lý và kích thước commit là kích thước của cấu trúc _SEGMENT_HEAP.
 
-Phần còn lại của bộ nhớ reverse dưới cấu trúc _SEGMENT_HEAP được gọi là LFH context extension và nó được dynamically commited để lưu trữ cấu trúc dữ liệu cần thiết cho các LFH bucket đã được kích hoạt.
+Phần còn lại của bộ nhớ reversed dưới cấu trúc _SEGMENT_HEAP được gọi là LFH context extension và nó được dynamically commited để lưu trữ cấu trúc dữ liệu cần thiết cho các LFH bucket đã được kích hoạt.
 
 ![](pic/pic3.PNG)
 
@@ -226,7 +225,7 @@ Sơ đồ sau miêu tả logic của RtlpHpAllocateHeap():
 
 Mục đích của RtlpHpAllocateHeap là gọi hàm cấp phát Segment Heap component thích hợp dựa trên AllocSize. AllocSize (kích thước phân bổ) là UserSize được điều chỉnh tùy thuộc vào Flags, nhưng theo mặc định, AllocSize sẽ bằng UserSize trừ khi UserSize là 0 (nếu UserSize là 0, AllocSize sẽ là 1).
 
-Lưu ý rằng việc AllocSize được kiểm tra thực sự nằm trong hàm RtlpHpAllocateHeapInternal(). Ngoài ra, cần lưu ý là nếu phân bổ LFH trả về -1, điều đó có nghĩa là LFH bucket tương ứng với AllocSize chưa được kích hoạt và do đó, yêu cầu cấp phát cuối cùng sẽ được chuyển đến components cấp phát VS.
+Lưu ý rằng việc AllocSize được kiểm tra thực sự nằm trong hàm RtlpHpAllocateHeapInternal(). Ngoài ra, cần lưu ý là nếu phân bổ LFH trả về -1, điều đó có nghĩa là LFH bucket tương ứng với AllocSize chưa được kích hoạt và do đó, yêu cầu cấp phát cuối cùng sẽ được chuyển đến VS allocation component.
 
 **Block Freeing**
 
@@ -244,18 +243,18 @@ Sơ đồ bên dưới miêu tả logic của việc giải phóng của hàm Rt
 
 ![](pic/pic5.PNG)
 
-Mục đích của RtlpHpFreeHeap() là gọi hàm giải phóng của Segment Heap component thích hợp dựa trên giá trị của UserAddress và loại subsegment của nó. Các subsegment sẽ được thảo luận thêm ở phần sau của bài viết này, ở đây ta cần biết, các subsegment là các loại backend block đặc biệt, nơi các block VS và LFH được cấp phát từ đó.
+Mục đích của RtlpHpFreeHeap() là gọi hàm giải phóng của Segment Heap component thích hợp dựa trên giá trị của UserAddress và loại subsegment của nó. Các subsegment sẽ được thảo luận thêm ở phần sau của bài viết này, ở đây ta cần biết, các subsegment là các loại backend block đặc biệt, nơi các VS và LFH block được cấp phát từ đó.
 
-Vì địa chỉ của các phân bổ lớn được căn chỉnh thành 64KB, một UserAddress với 16 bit thấp được clear sẽ được kiểm tra đầu tiên dựa trên large allocation bitmap. Nếu UserAddress (thực sự là UserAddress >> 16) được đặt trong large allocation bitmap, large block freeing được gọi.
+Vì địa chỉ của các phân bổ lớn được căn chỉnh thành 64KB, một UserAddress với 16 bit thấp được clear sẽ được kiểm tra đầu tiên dựa trên large allocation bitmap. Nếu UserAddress (thực ra là UserAddress >> 16) được đặt trong large allocation bitmap, large block freeing được gọi.
 
-Tiếp theo, subsegment nơi UserAddress được xác định. Nếu UserAddress nhỏ hơn hoặc bằng resulting địa chỉ của subsegment, điều đó có nghĩa là UserAddress dành cho backend block, vì địa chỉ của VS block và LFH block nằm trên địa chỉ subsegment do các header của VS/LFH subsegment được đặt trước các VS/LFH block. Nếu UserAddress trỏ đến một backend block, backend freeing được gọi.
+Tiếp theo, subsegment của UserAddress được xác định. Nếu UserAddress nhỏ hơn hoặc bằng địa chỉ của subsegment đó, điều đó có nghĩa là UserAddress dùng cho backend block, vì địa chỉ của VS block và LFH block nằm trên địa chỉ subsegment do các header của VS/LFH subsegment được đặt trước các VS/LFH block. Nếu UserAddress trỏ đến một backend block, backend freeing được gọi.
 
-Cuối cùng, nếu subsegment là một LFH subsegment, LFH freeing được gọi. Ngược lại, VS freeing được gọi. Nếu VS freeing được gọi và nếu LfhBlockSize được trả về (tương đương block size của VS block được giải phóng trừ đi 0x10) có thê được sử dụng bởi LFH, bộ đếm sử dụng của LFH bucket tương ứng với LfhBlockSize sẽ được cập nhật.
+Cuối cùng, nếu subsegment là một LFH subsegment, LFH freeing được gọi. Ngược lại, VS freeing được gọi. Nếu VS freeing được gọi và nếu LfhBlockSize được trả về (tương đương block size của VS block được giải phóng trừ đi 0x10) có thể dùng cho LFH, bộ đếm sử dụng của LFH bucket tương ứng với LfhBlockSize sẽ được cập nhật.
 
-Lưu ý rằng logic kiểm tra subsegment của UserAddress thực sự nằm trong hàm RtlpHpSegFree(). Ngoài ra, sơ đồ chỉ hiển thị logic giải phóng của RtlpHpFreeHeap(), các chức năng khác của nó không được bao gồm.
+Lưu ý rằng logic kiểm tra subsegment của UserAddress thực sự nằm trong hàm RtlpHpSegFree(). Ngoài ra, sơ đồ chỉ hiển thị freeing logic của RtlpHpFreeHeap(), các chức năng khác của nó không được nhắc đến.
 
 ### 2.2. BACKEND ALLOCATION 
-Backend được sử dụng để phân bổ kích thước từ 131073 (0x20001) đến 520192 (0x7F000). Các backend block có mức độ chi tiết về kích thước trang và mỗi block không có block header ở đầu. Ngoài việc phân bổ các back end block, backend cũng được sử dụng bởi component VS và LFH để tạo các subsegment VS/LFH (các loại backend block đặc biệt) nơi các block VS/LFH được phân bổ.
+Backend được sử dụng để phân bổ kích thước từ 131,073 (0x20001) đến 520,192 (0x7F000). Các backend block có mức độ chi tiết về page size và mỗi block không có block header ở đầu. Ngoài việc phân bổ các backend block, backend cũng được sử dụng bởi VS và LFH component để tạo các VS/LFH subsegment (các loại backend block đặc biệt) nơi các VS/LFH block được phân bổ.
 
 **Segment Structure** 
 
@@ -263,20 +262,23 @@ Backend hoạt động trên cấu trúc segment là các block virtual memory 1
 
 ![](pic/pic6.PNG)
 
-2000 bytes đầu tiên của một segment được sử dụng cho segment header, trong khi phần còn lại được sử dụng để phân bổ các backend block. Ban đầu, 0x2000 bytes đầu tiên cộng với kích thước commit ban đầu của segment được commit, trong khi phần còn lại ở trạng thái reserver và được commit và decommit khi cần thiết.
+0x2000 bytes đầu tiên của một segment được sử dụng cho segment header, trong khi phần còn lại được sử dụng để phân bổ các backend block. Ban đầu, 0x2000 bytes đầu tiên cộng với kích thước commit ban đầu của segment sẽ được commit, phần còn lại của nó ở trạng thái reserve và sẽ được commit và decommit khi cần thiết.
 
-Segment header bao gồm một mảng 256 bộ mô tả phạm vị trang được dùng để mô tả trạng thái của từng trang trong segment. Vì phần dữ liệu của segment bắt đầu tại offset 0x2000,  page range descriptor đầu tiên được định vị lại để lưu trữ cấu trúc _HEAP_PAGE_SEGMENT, trong khi page range descriptor thứ hai không được sử dụng.
+Segment header bao gồm một mảng 256 page range descriptors được dùng để mô tả trạng thái của từng page trong segment. Vì phần dữ liệu của segment bắt đầu tại offset 0x2000,  page range descriptor đầu tiên được đặt lại để lưu trữ cấu trúc _HEAP_PAGE_SEGMENT, trong khi page range descriptor thứ hai không được sử dụng.
 
 **_HEAP_PAGE_SEGMENT Structure**
 
-Như đề cập ở trên, page range descriptor đầu tiên được định vị lại để lưu trữ cấu trúc _HEAP_PAGE_SEGMENT. Nó có các trường sau:
+Như đề cập ở trên, page range descriptor đầu tiên được đặt lại để lưu trữ cấu trúc _HEAP_PAGE_SEGMENT. Nó có các trường sau:
 ```
 windbg> dt ntdll!_HEAP_PAGE_SEGMENT
    +0x000 ListEntry : _LIST_ENTRY
    +0x010 Signature : Uint8B
  ```
    - ListEntry - Mỗi segment là một node của danh sách liên kết các segment của heap (HeapBase.SegmentListHead).
-   - Signature - Được sử dụng để xác minh nếu một địa chỉ là một phần của một segment. Trường này được tính theo công thức sau: (SegmentAddress >> 0x14) ^ RtlpHeapKey ^ HeapBase ^ 0xA2E64EADA2E64EAD.
+   - Signature - Được sử dụng để xác minh nếu một địa chỉ là một phần của một segment. Trường này được tính theo công thức bên dưới: 
+``` c
+(SegmentAddress >> 0x14) ^ RtlpHeapKey ^ HeapBase ^ 0xA2E64EADA2E64EAD.
+```
 
 **_HEAP_PAGE_RANGE_DESCRIPTOR Structure**
 
