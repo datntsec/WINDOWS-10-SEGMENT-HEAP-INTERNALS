@@ -9,23 +9,23 @@ Một khía cạnh quan trọng của Segment Heap là nó được thiết lậ
 Trong phần trình bày này, tôi sẽ thảo luận về cấu trúc dữ liệu, thuật toán và cơ chế bảo mật của Segment Heap. Kiến thức về Segment Heap cũng được áp dụng bằng cách thảo luận và chứng minh cách lỗ hổng memory corruption trong thư viện Microsoft WinRT PDF (CVE-2016-0117) được tận dụng để ghi tùy ý trong phần sau của nội dung tiến trình Edge.
 
 # CONTENTS
-[1. Introduction](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#1-introduction)
-[2. Internals](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#2-internals)
-    * [2.1 Overview](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#21-overview)
+1. [Introduction](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#1-introduction).
+2. [Internals](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#2-internals).
+    * 2.1 [Overview](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#21-overview).
       - Architecture
       - Defaults and Configuration
       - Heap Creation
       - HeapBase and _SEGMENT_HEAP Structure
       - Block Allocation 
       - Block Freeing 
-    * [2.2. Backend Allocation](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#22-backend-allocation)
+    * 2.2. [Backend Allocation](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#22-backend-allocation)
       - Segment Structure
       - _HEAP_PAGE_SEGMENT Structure
       - _HEAP_PAGE_RANGE_DESCRIPTOR Structure
       - Backend Free Tree 
       - Backend Allocation 
       - Backend Freeing 
-    * [2.3. Variable Size Allocation](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#23-variable-size-allocation)
+    * 2.3. [Variable Size Allocation](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#23-variable-size-allocation)
       - VS Subsegments
       - _HEAP_VS_CONTEXT Structure 
       - _HEAP_VS_SUBSEGMENT Structure
@@ -34,7 +34,7 @@ Trong phần trình bày này, tôi sẽ thảo luận về cấu trúc dữ li�
       - VS Free Tree
       - VS Allocation
       - VS Freeing
-    * [2.4. Low Fragmentation Heap](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#24-low-fragmentation-heap)
+    * 2.4. [Low Fragmentation Heap](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#24-low-fragmentation-heap)
       - LFH Subsegments
       - _HEAP_LFH_CONTEXT Structure
       - _HEAP_LFH_ONDEMAND_POINTER Structure.
@@ -46,41 +46,43 @@ Trong phần trình bày này, tôi sẽ thảo luận về cấu trúc dữ li�
       - LFH Bucket Activation
       - LFH Allocation
       - LFH Freeing 
-    * [2.5. Large Blocks Allocation](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#25-large-block-allocation)
+    * 2.5. [Large Blocks Allocation](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#25-large-block-allocation)
       - _HEAP_LARGE_ALLOC_DATA Structure
       - Large Block Allocation
       - Large Block Freeing
-    * [2.6. Block Padding](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#26-block-padding)
-    * [2.7. Summary and Analysis: Internals](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#27-summary-and-analysis-internals)
-[3. Security Mechanisms](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#3-security-mechanisms)
-    * [3.1. Fast Fail on Linked List Node Corruption](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#31-fast-fail-on-linked-list-node-corruption)
-    * [3.2. Fast Fail on RB Tree Node Corruption](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#32-fast-fail-on-rb-tree-node-corruption)
-    * [3.3. Heap Address Randomization](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#33-heap-address-randomization)
-    * [3.4. Guard Pages](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#34-guard-pages)
-    * [3.5. Function Pointer Encoding](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#35-function-pointer-encoding)
-    * [3.6. VS Block Header Encoding](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#36-vs-block-header-encoding)
-    * [3.7. LFH Subsegment BlockOffsets Encoding](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#37-lfh-subsegment-blockoffsets-encoding)
-    * [3.8. LFH Allocation Randomization](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#38-lfh-allocation-randomization)
-    * [3.9. Summary and Analysis: Security Mechanisms](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#39-summary-and-analysis-security-mechanisms)
-[4. Case Study](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#4-case-study)
-    * [4.1. CVE-2016-0117 Vulnerability Details](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#41-cve-2016-0117-vulnerability-details)
-    * [4.2. Plan for Implanting the Target Address](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#42-plan-for-implanting-the-target-address)
-    * [4.3. Manipulating the MSVCRT Heap with Chakra’s ArrayBuffer](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#43-manipulating-the-msvcrt-heap-with-chakras-arraybuffer)
+    * 2.6. [Block Padding](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#26-block-padding)
+    * 2.7. [Summary and Analysis: Internals](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#27-summary-and-analysis-internals)
+3. [Security Mechanisms](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#3-security-mechanisms)
+    * 3.1. [Fast Fail on Linked List Node Corruption](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#31-fast-fail-on-linked-list-node-corruption)
+    * 3.2. [Fast Fail on RB Tree Node Corruption](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#32-fast-fail-on-rb-tree-node-corruption)
+    * 3.3. [Heap Address Randomization](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#33-heap-address-randomization)
+    * 3.4. [Guard Pages](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#34-guard-pages)
+    * 3.5. [Function Pointer Encoding](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#35-function-pointer-encoding)
+    * 3.6. [VS Block Header Encoding](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#36-vs-block-header-encoding)
+    * 3.7. [LFH Subsegment BlockOffsets Encoding](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#37-lfh-subsegment-blockoffsets-encoding)
+    * 3.8. [LFH Allocation Randomization](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#38-lfh-allocation-randomization)
+    * 3.9. [Summary and Analysis: Security Mechanisms](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#39-summary-and-analysis-security-mechanisms)
+4. [Case Study](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#4-case-study)
+    * 4.1. [CVE-2016-0117 Vulnerability Details](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#41-cve-2016-0117-vulnerability-details)
+    * 4.2. [Plan for Implanting the Target Address](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#42-plan-for-implanting-the-target-address)
+    * 4.3. [Manipulating the MSVCRT Heap with Chakra’s ArrayBuffer](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#43-manipulating-the-msvcrt-heap-with-chakras-arraybuffer)
       - Allocation and Setting Controlled Values
       - LFH Bucket Activation
       - Freeing and Garbage Collection 
-    * [4.4. Preventing Target Address Corruption](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#44-preventing-target-address-corruption)
-    * [4.5. Preventing Free Blocks Coalescing](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#45-preventing-free-blocks-coalescing)
-    * [4.6. Preventing Unintended Use of Free Blocks](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#46-preventing-unintended-use-of-free-blocks)
-    * [4.7. Adjusted Plan for Implanting the Target Address](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#47-adjusted-plan-for-implanting-the-target-address)
-    * [4.8. Successful Arbitrary Write](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#48-successful-arbitrary-write)
-    * [4.9. Analysis and Summary: Case Study](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#49-analysis-and-summary-case-study)
-[5. Conclusion](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#5-conclusion)
-[6. Appendix: WinDbg !heap Extension Commands for Segment Heap](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#6-appendix-windbg-heap-extension-commands-for-segment-heap)
+    * 4.4. [Preventing Target Address Corruption](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#44-preventing-target-address-corruption)
+    * 4.5. [Preventing Free Blocks Coalescing](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#45-preventing-free-blocks-coalescing)
+    * 4.6. [Preventing Unintended Use of Free Blocks](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#46-preventing-unintended-use-of-free-blocks)
+    * 4.7. [Adjusted Plan for Implanting the Target Address](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#47-adjusted-plan-for-implanting-the-target-address)
+    * 4.8. [Successful Arbitrary Write](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#48-successful-arbitrary-write)
+    * 4.9. [Analysis and Summary: Case Study](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#49-analysis-and-summary-case-study)
+5. [Conclusion](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#5-conclusion)
+6. [Appendix: WinDbg !heap Extension Commands for Segment Heap](https://github.com/datntsec/WINDOWS-10-SEGMENT-HEAP-INTERNALS/blob/master/README.md#6-appendix-windbg-heap-extension-commands-for-segment-heap)
     * !heap -x <address>
     * !heap -i <address> -h <heap>
     * !heap -s -a -h <heap>
   
+## 21. Overview
+
 ## 1. INTRODUCTION
 Với sự ra đời của Windows 10, Segment Heap, một triển khai native heap mới cũng được giới thiệu. Nó hiện là triển khai native heap được sử dụng trong các ứng dụng Windows (trước đây được gọi là Modern/Metro apps) và trong các tiến trình hệ thống nhất định, các ứng dụng truyền thống thì mặc định vẫn triển khai native heap cũ hơn (NT Heap).
 
